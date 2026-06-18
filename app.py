@@ -237,32 +237,104 @@ def parse_hudson_docx(raw_text: str) -> dict:
     return {k: v for k, v in matches.items() if len(v) > 0}
 
 
+def mirror_pass_coords(coords: np.ndarray) -> np.ndarray:
+    """Flip pass coordinates horizontally to match left-to-right attacking direction."""
+    c = np.asarray(coords, dtype=float)
+    return np.array([FIELD_X - c[0], c[1], FIELD_X - c[2], c[3]])
+
+
+def reconcile_failed_passes(
+    totais_coords: list[np.ndarray],
+    errados_coords: list[np.ndarray],
+    start_tol: float = 6.0,
+    full_tol: float = 9.0,
+) -> list[tuple]:
+    """Reclassify failed passes already present in the Totais list as PASS LOST."""
+    used: set[int] = set()
+    lost_by_index: dict[int, np.ndarray] = {}
+
+    for err in errados_coords:
+        best_idx = None
+        best_score = float("inf")
+        for idx, tot in enumerate(totais_coords):
+            if idx in used:
+                continue
+            start_dist = float(np.linalg.norm(err[:2] - tot[:2]))
+            full_dist = float(np.max(np.abs(err - tot)))
+            if start_dist <= start_tol or full_dist <= full_tol:
+                score = start_dist + full_dist
+                if score < best_score:
+                    best_score = score
+                    best_idx = idx
+        if best_idx is not None:
+            used.add(best_idx)
+            lost_by_index[best_idx] = err
+
+    events = []
+    for idx, tot in enumerate(totais_coords):
+        if idx in lost_by_index:
+            err = lost_by_index[idx]
+            events.append(("PASS LOST", float(err[0]), float(err[1]), float(err[2]), float(err[3]), None))
+        else:
+            events.append(("PASS WON", float(tot[0]), float(tot[1]), float(tot[2]), float(tot[3]), None))
+    return events
+
+
 def parse_world_cup_docx(raw_text: str) -> dict:
     lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
-    players = {}
+    players_totais: dict[str, list[np.ndarray]] = {}
+    players_errados: dict[str, list[np.ndarray]] = {}
     current_player = None
-    current_state = "PASS WON"
+    current_mode = "totais"
     re_player = re.compile(r"^Passes\s+Totais\s*\|\s*(.+)$", re.IGNORECASE)
     re_fail_section = re.compile(r"^Passes\s+Errados:?$", re.IGNORECASE)
     re_arrow = re.compile(
         r"^Seta\s+\d+:\s*\(([-+]?\d*\.?\d+),\s*([-+]?\d*\.?\d+)\)\s*->\s*\(([-+]?\d*\.?\d+),\s*([-+]?\d*\.?\d+)\)$",
         re.IGNORECASE,
     )
+
     for ln in lines:
         m_player = re_player.match(ln)
         if m_player:
+            if current_player and current_player not in players_totais:
+                players_totais[current_player] = []
+                players_errados.setdefault(current_player, [])
             current_player = m_player.group(1).strip()
-            players.setdefault(current_player, [])
-            current_state = "PASS WON"
+            players_totais.setdefault(current_player, [])
+            players_errados.setdefault(current_player, [])
+            current_mode = "totais"
+            continue
+        if not current_player:
             continue
         if re_fail_section.match(ln):
-            current_state = "PASS LOST"
+            current_mode = "errados"
             continue
         m_arrow = re_arrow.match(ln)
-        if m_arrow and current_player:
-            x1, y1, x2, y2 = map(float, m_arrow.groups())
-            players[current_player].append((current_state, x1, y1, x2, y2, None))
-    return {k: v for k, v in players.items() if len(v) > 0}
+        if not m_arrow:
+            continue
+        coords = np.array(list(map(float, m_arrow.groups())))
+        if current_mode == "totais":
+            players_totais[current_player].append(coords)
+        else:
+            players_errados[current_player].append(coords)
+
+    players = {}
+    for player, totais in players_totais.items():
+        if not totais:
+            continue
+        errados = players_errados.get(player, [])
+        events = reconcile_failed_passes(totais, errados)
+        if player == BOUADDI_KEY:
+            events = [
+                (
+                    state,
+                    *mirror_pass_coords(np.array([x1, y1, x2, y2])),
+                    video,
+                )
+                for state, x1, y1, x2, y2, video in events
+            ]
+        players[player] = events
+    return players
 
 
 def events_to_dataframe(events: list, match_name: str) -> pd.DataFrame:
@@ -791,7 +863,7 @@ def _draw_comet_arrow(ax, x0, y0, x1, y1, color):
     ax.scatter(x1, y1, s=32, marker="o", facecolors=color, edgecolors="white", linewidths=0.9, zorder=6, alpha=0.85)
 
 
-def draw_top_xt_map(df, top_n=10):
+def draw_top_xt_map(df, top_n=5):
     fig, ax, pitch = _base_pitch()
     top_passes = (
         df[(df["is_won"]) & (df["delta_xt_adj"] > 0)]
@@ -855,9 +927,9 @@ def render_player_maps(df: pd.DataFrame):
     st.markdown('<div class="map-label">Zone Heatmap (Destination)</div>', unsafe_allow_html=True)
     st.image(img_ht, use_container_width=True)
 
-    img_xt, fig_xt = draw_top_xt_map(df, top_n=10)
+    img_xt, fig_xt = draw_top_xt_map(df, top_n=5)
     plt.close(fig_xt)
-    st.markdown('<div class="map-label">Top 10 Pass Impact</div>', unsafe_allow_html=True)
+    st.markdown('<div class="map-label">Top 5 Pass Impact</div>', unsafe_allow_html=True)
     st.image(img_xt, use_container_width=True)
 
 
