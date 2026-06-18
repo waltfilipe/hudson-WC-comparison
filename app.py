@@ -237,47 +237,68 @@ def parse_hudson_docx(raw_text: str) -> dict:
     return {k: v for k, v in matches.items() if len(v) > 0}
 
 
-def mirror_pass_coords(coords: np.ndarray) -> np.ndarray:
-    """Flip pass coordinates horizontally to match left-to-right attacking direction."""
-    c = np.asarray(coords, dtype=float)
-    return np.array([FIELD_X - c[0], c[1], FIELD_X - c[2], c[3]])
+def invert_pitch_coords(x1: float, y1: float, x2: float, y2: float) -> tuple[float, float, float, float]:
+    """Rotate pitch coordinates 180° so attack direction matches Hudson/MacAllister."""
+    return FIELD_X - x1, FIELD_Y - y1, FIELD_X - x2, FIELD_Y - y2
+
+
+def _pass_match_distance(a: np.ndarray, b: np.ndarray) -> float:
+    return float(np.linalg.norm(a - b) + np.max(np.abs(a - b)))
 
 
 def reconcile_failed_passes(
     totais_coords: list[np.ndarray],
     errados_coords: list[np.ndarray],
-    start_tol: float = 6.0,
-    full_tol: float = 9.0,
 ) -> list[tuple]:
-    """Reclassify failed passes already present in the Totais list as PASS LOST."""
-    used: set[int] = set()
+    """Match failed passes to the closest Totais entry and keep only one LOST event."""
+    used_totais: set[int] = set()
+    used_errados: set[int] = set()
     lost_by_index: dict[int, np.ndarray] = {}
 
-    for err in errados_coords:
+    candidate_pairs: list[tuple[float, int, int]] = []
+    for err_idx, err in enumerate(errados_coords):
+        for tot_idx, tot in enumerate(totais_coords):
+            candidate_pairs.append((_pass_match_distance(err, tot), err_idx, tot_idx))
+    candidate_pairs.sort(key=lambda item: item[0])
+
+    for _, err_idx, tot_idx in candidate_pairs:
+        if err_idx in used_errados or tot_idx in used_totais:
+            continue
+        used_errados.add(err_idx)
+        used_totais.add(tot_idx)
+        lost_by_index[tot_idx] = errados_coords[err_idx]
+
+    for err_idx, err in enumerate(errados_coords):
+        if err_idx in used_errados:
+            continue
         best_idx = None
-        best_score = float("inf")
-        for idx, tot in enumerate(totais_coords):
-            if idx in used:
+        best_dist = float("inf")
+        for tot_idx, tot in enumerate(totais_coords):
+            if tot_idx in used_totais:
                 continue
-            start_dist = float(np.linalg.norm(err[:2] - tot[:2]))
-            full_dist = float(np.max(np.abs(err - tot)))
-            if start_dist <= start_tol or full_dist <= full_tol:
-                score = start_dist + full_dist
-                if score < best_score:
-                    best_score = score
-                    best_idx = idx
+            dist = _pass_match_distance(err, tot)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = tot_idx
         if best_idx is not None:
-            used.add(best_idx)
+            used_errados.add(err_idx)
+            used_totais.add(best_idx)
             lost_by_index[best_idx] = err
 
     events = []
-    for idx, tot in enumerate(totais_coords):
-        if idx in lost_by_index:
-            err = lost_by_index[idx]
+    for tot_idx, tot in enumerate(totais_coords):
+        if tot_idx in lost_by_index:
+            err = lost_by_index[tot_idx]
             events.append(("PASS LOST", float(err[0]), float(err[1]), float(err[2]), float(err[3]), None))
         else:
             events.append(("PASS WON", float(tot[0]), float(tot[1]), float(tot[2]), float(tot[3]), None))
     return events
+
+
+def apply_player_orientation(player: str, x1: float, y1: float, x2: float, y2: float) -> tuple[float, float, float, float]:
+    if player == BOUADDI_KEY:
+        return invert_pitch_coords(x1, y1, x2, y2)
+    return x1, y1, x2, y2
 
 
 def parse_world_cup_docx(raw_text: str) -> dict:
@@ -324,15 +345,14 @@ def parse_world_cup_docx(raw_text: str) -> dict:
             continue
         errados = players_errados.get(player, [])
         events = reconcile_failed_passes(totais, errados)
-        if player == BOUADDI_KEY:
-            events = [
-                (
-                    state,
-                    *mirror_pass_coords(np.array([x1, y1, x2, y2])),
-                    video,
-                )
-                for state, x1, y1, x2, y2, video in events
-            ]
+        events = [
+            (
+                state,
+                *apply_player_orientation(player, x1, y1, x2, y2),
+                video,
+            )
+            for state, x1, y1, x2, y2, video in events
+        ]
         players[player] = events
     return players
 
@@ -341,7 +361,7 @@ def events_to_dataframe(events: list, match_name: str) -> pd.DataFrame:
     dfm = pd.DataFrame(events, columns=["type", "x_start", "y_start", "x_end", "y_end", "video"])
     dfm["match"] = match_name
     dfm["number"] = np.arange(1, len(dfm) + 1)
-    dfm["is_won"] = dfm["type"].str.contains("WON", case=False)
+    dfm["is_won"] = dfm["type"].eq("PASS WON")
     dfm["progressive"] = dfm.apply(
         lambda r: r["is_won"] and is_progressive_pass(r["x_start"], r["y_start"], r["x_end"], r["y_end"]),
         axis=1,
@@ -362,7 +382,6 @@ def events_to_dataframe(events: list, match_name: str) -> pd.DataFrame:
     return dfm
 
 
-@st.cache_data(show_spinner=False)
 def load_all_pass_data() -> tuple[dict, dict]:
     hudson_path = Path(HUDSON_DOCX)
     wc_path = Path(WORLD_CUP_DOCX)
