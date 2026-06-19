@@ -85,8 +85,10 @@ WYSCOUT_PROG_CROSS_HALF = 15.0
 WYSCOUT_PROG_OPP_HALF = 10.0
 OPT_ATTACKING_TWO_THIRDS_X = 40.0
 OPT_PROGRESS_PCT = 0.25
-XT_PROGRESS_PCT = 0.15
+XT_PROGRESS_ATTACKING_PCT = 0.15
+XT_PROGRESS_DEFENSIVE_PCT = 0.20
 XT_HIGH_PCT = 0.30
+XT_MIN_PASS_DISTANCE = 9.5
 XT_EPS = 1e-9
 
 PROG_MODEL_WYSCOUT = "wyscout"
@@ -100,7 +102,7 @@ PROG_MODEL_LABELS = {
 PROG_MODEL_DESCRIPTIONS = {
     PROG_MODEL_WYSCOUT: "Metros até o gol por zona (30 m / 15 m / 10 m).",
     PROG_MODEL_OPTA: "Passe completado nos 2/3 ofensivos que aproxima ≥25% do gol.",
-    PROG_MODEL_XT: "xT aumenta ≥15% (progressive) ou >30% (altamente progressive).",
+    PROG_MODEL_XT: "xT +20% fim def. / +15% fim ataq., dist. >9.5 m; >30% altamente prog.",
 }
 
 HUDSON_DOCX = "Passes - Hudson Cicala.docx"
@@ -263,16 +265,28 @@ def xt_relative_increase(xt_start: float, xt_end: float) -> float:
     return (xt_end - xt_start) / xt_start
 
 
-def classify_xt_progressive(xt_start: float, xt_end: float) -> str:
+def classify_xt_progressive(
+    xt_start: float,
+    xt_end: float,
+    x_end: float,
+    pass_distance: float,
+) -> str:
     """Returns 'none', 'progressive', or 'highly'."""
+    if pass_distance <= XT_MIN_PASS_DISTANCE:
+        return "none"
     if xt_end <= xt_start:
         return "none"
     pct = xt_relative_increase(xt_start, xt_end)
+    min_pct = XT_PROGRESS_DEFENSIVE_PCT if x_end < HALF_LINE_X else XT_PROGRESS_ATTACKING_PCT
+    if pct < min_pct:
+        return "none"
     if pct == float("inf") or pct > XT_HIGH_PCT:
         return "highly"
-    if pct >= XT_PROGRESS_PCT:
-        return "progressive"
-    return "none"
+    return "progressive"
+
+
+def is_progressive_xt_attempt(xt_start: float, xt_end: float, x_end: float, pass_distance: float) -> bool:
+    return classify_xt_progressive(xt_start, xt_end, x_end, pass_distance) in ("progressive", "highly")
 
 
 def is_progressive_attempt(row, model: str) -> bool:
@@ -280,7 +294,7 @@ def is_progressive_attempt(row, model: str) -> bool:
         return is_progressive_wyscout(row.x_start, row.y_start, row.x_end, row.y_end)
     if model == PROG_MODEL_OPTA:
         return is_progressive_opta(row.x_start, row.y_start, row.x_end, row.y_end)
-    return classify_xt_progressive(row.xt_start, row.xt_end) in ("progressive", "highly")
+    return is_progressive_xt_attempt(row.xt_start, row.xt_end, row.x_end, row.pass_distance)
 
 
 def apply_progressive_model(df: pd.DataFrame, model: str) -> pd.DataFrame:
@@ -295,7 +309,7 @@ def apply_progressive_model(df: pd.DataFrame, model: str) -> pd.DataFrame:
             attempt = is_progressive_opta(row.x_start, row.y_start, row.x_end, row.y_end)
             highly = False
         else:
-            xt_cat = classify_xt_progressive(row.xt_start, row.xt_end)
+            xt_cat = classify_xt_progressive(row.xt_start, row.xt_end, row.x_end, row.pass_distance)
             attempt = xt_cat in ("progressive", "highly")
             highly = xt_cat == "highly"
         progressive_flags.append(row.is_won and attempt)
