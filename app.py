@@ -94,7 +94,7 @@ XT_MODEL_LABELS = {
 }
 XT_MODEL_DESCRIPTIONS = {
     XT_MODEL_HEURISTIC: "Grade sintética normalizada (0–1) por proximidade ao gol.",
-    XT_MODEL_HEURISTIC_V2: "Zonas por terço + interpolação + reciclagem e ΔxT mínimo.",
+    XT_MODEL_HEURISTIC_V2: "Zonas por terço, pico na grande área, progressivo ΔxT >0.15 / >0.35.",
     XT_MODEL_STATSBOMB: "Markov chain — FA WSL 2019/20, probabilidade de gol por célula.",
     XT_MODEL_DATABALLPY: "Modelo pré-treinado open play (264×196), coords convertidas de StatsBomb.",
 }
@@ -109,6 +109,8 @@ XT_HIGH_PCT = 0.30
 XT_MIN_PASS_DISTANCE = 9.5
 XT_EPS = 1e-9
 XT_V2_MIN_ABS_DELTA = 0.008
+XT_V2_PROG_DELTA = 0.15
+XT_V2_HIGH_DELTA = 0.35
 XT_V2_NEG_PENALTY_FACTOR = 0.55
 XT_V2_PRESSURE_ESCAPE_BONUS = 0.005
 XT_V2_PRESSURE_X_MAX = 50.0
@@ -316,17 +318,13 @@ def classify_xt_progressive_v2(
     x_end: float,
     pass_distance: float,
 ) -> str:
-    """v2: exige ΔxT absoluto mínimo além do aumento percentual."""
+    """v2: progressivo por ΔxT absoluto (>0.15 / >0.35)."""
     if pass_distance <= XT_MIN_PASS_DISTANCE:
         return "none"
     delta_abs = xt_end - xt_start
-    if delta_abs < XT_V2_MIN_ABS_DELTA:
+    if delta_abs <= XT_V2_PROG_DELTA:
         return "none"
-    pct = xt_relative_increase(xt_start, xt_end)
-    min_pct = XT_PROGRESS_DEFENSIVE_PCT if x_end < HALF_LINE_X else XT_PROGRESS_ATTACKING_PCT
-    if pct < min_pct:
-        return "none"
-    if pct == float("inf") or pct > XT_HIGH_PCT:
+    if delta_abs > XT_V2_HIGH_DELTA:
         return "highly"
     return "progressive"
 
@@ -428,25 +426,43 @@ def compute_heuristic_xt_grid(NX=16, NY=12, sub=24):
     return XTc
 
 
+def _smoothstep(t: np.ndarray) -> np.ndarray:
+    t = np.clip(t, 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
 def _zone_x_threat(x: np.ndarray) -> np.ndarray:
-    """Idea 3: piecewise threat by pitch third (favours build-up in midfield)."""
+    """Threat by pitch third; attacking profile peaks near the box, fades at the goal line."""
     x = np.clip(x, 0.0, FIELD_X)
     threat = np.zeros_like(x, dtype=float)
     def_mask = x < OPT_ATTACKING_TWO_THIRDS_X
     mid_mask = (x >= OPT_ATTACKING_TWO_THIRDS_X) & (x < FINAL_THIRD_LINE_X)
     att_mask = x >= FINAL_THIRD_LINE_X
+
     threat[def_mask] = 0.12 * (x[def_mask] / OPT_ATTACKING_TWO_THIRDS_X)
-    threat[mid_mask] = 0.12 + 0.38 * (
-        (x[mid_mask] - OPT_ATTACKING_TWO_THIRDS_X) / (FINAL_THIRD_LINE_X - OPT_ATTACKING_TWO_THIRDS_X)
+    mid_t = (x[mid_mask] - OPT_ATTACKING_TWO_THIRDS_X) / (
+        FINAL_THIRD_LINE_X - OPT_ATTACKING_TWO_THIRDS_X
     )
-    threat[att_mask] = 0.50 + 0.50 * (
-        (x[att_mask] - FINAL_THIRD_LINE_X) / (FIELD_X - FINAL_THIRD_LINE_X)
-    )
+    threat[mid_mask] = 0.12 + 0.34 * _smoothstep(mid_t)
+
+    att_t = (x[att_mask] - FINAL_THIRD_LINE_X) / (FIELD_X - FINAL_THIRD_LINE_X)
+    # Peak near penalty area (t≈0.55 → x≈102), smooth decay toward the byline (t→1)
+    rise = _smoothstep(att_t / 0.58)
+    byline_fade = 1.0 - 0.48 * _smoothstep((att_t - 0.52) / 0.48)
+    threat[att_mask] = 0.48 + 0.28 * rise * byline_fade
     return threat
 
 
 def _centrality(y: np.ndarray) -> np.ndarray:
     return 1.0 - np.abs((y / FIELD_Y) - 0.5) * 2.0
+
+
+def _location_factor(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Centrality bonus only in the attacking third (flat across width in build-up zones)."""
+    cent = _centrality(y)
+    att_t = np.clip((x - FINAL_THIRD_LINE_X) / (FIELD_X - FINAL_THIRD_LINE_X), 0.0, 1.0)
+    att_gate = _smoothstep(att_t)
+    return 0.93 + 0.07 * cent * att_gate
 
 
 def _lateral_frac(y: float) -> float:
@@ -459,7 +475,7 @@ def compute_heuristic_v2_fine_grid(nx: int = XT_V2_FINE_NX, ny: int = XT_V2_FINE
     xe = np.linspace(0.0, FIELD_X, nx)
     ye = np.linspace(0.0, FIELD_Y, ny)
     Xc, Yc = np.meshgrid(xe, ye)
-    base = _zone_x_threat(Xc) * (0.72 + 0.28 * _centrality(Yc))
+    base = _zone_x_threat(Xc) * _location_factor(Xc, Yc)
     return (base - base.min()) / (base.max() - base.min() + 1e-12)
 
 
@@ -1460,8 +1476,8 @@ def render_heuristic_v1_v2_comparison(
     st.markdown("---")
     st.markdown("### Comparativo gráfico — xT Heurístico v1 vs v2")
     st.caption(
-        "v2: zonas por terço, interpolação bilinear, ΔxT mínimo para progressivo "
-        "e penalidade reduzida em reciclagem útil."
+        "v2: pico de ameaça na grande área, centralidade só no terço ofensivo, "
+        "progressivo ΔxT >0.15 / altamente >0.35."
     )
 
     gcols = st.columns(3)
