@@ -66,6 +66,7 @@ FIG_W, FIG_H = 7.0, 4.7
 FIG_DPI = 180
 COLOR_SUCCESS = "#c8c8c8"
 COLOR_PROGRESSIVE = "#2F80ED"
+COLOR_HIGHLY_PROGRESSIVE = "#1B44A8"
 COLOR_FAIL = "#E07070"
 ALPHA_SUCCESS = 0.07
 PASS_TONES = ["#5b9bd5", "#3b82f6", "#1d4ed8"]
@@ -82,6 +83,25 @@ LATERAL_MIN_DIST = 12.0
 WYSCOUT_PROG_OWN_HALF = 30.0
 WYSCOUT_PROG_CROSS_HALF = 15.0
 WYSCOUT_PROG_OPP_HALF = 10.0
+OPT_ATTACKING_TWO_THIRDS_X = 40.0
+OPT_PROGRESS_PCT = 0.25
+XT_PROGRESS_PCT = 0.15
+XT_HIGH_PCT = 0.30
+XT_EPS = 1e-9
+
+PROG_MODEL_WYSCOUT = "wyscout"
+PROG_MODEL_OPTA = "opta"
+PROG_MODEL_XT = "xt"
+PROG_MODEL_LABELS = {
+    PROG_MODEL_WYSCOUT: "Wyscout",
+    PROG_MODEL_OPTA: "Opta",
+    PROG_MODEL_XT: "delta xT",
+}
+PROG_MODEL_DESCRIPTIONS = {
+    PROG_MODEL_WYSCOUT: "Metros até o gol por zona (30 m / 15 m / 10 m).",
+    PROG_MODEL_OPTA: "Passe completado nos 2/3 ofensivos que aproxima ≥25% do gol.",
+    PROG_MODEL_XT: "xT aumenta ≥15% (progressive) ou >30% (altamente progressive).",
+}
 
 HUDSON_DOCX = "Passes - Hudson Cicala.docx"
 WORLD_CUP_DOCX = "Passes World Cup.docx"
@@ -206,7 +226,7 @@ def distance_to_goal(x, y):
     return np.sqrt((GOAL_X - x) ** 2 + (GOAL_Y - y) ** 2)
 
 
-def is_progressive_pass(x_start, y_start, x_end, y_end):
+def is_progressive_wyscout(x_start, y_start, x_end, y_end) -> bool:
     """Wyscout progressive pass: distance-to-goal reduction by pitch zone."""
     start_dist = distance_to_goal(x_start, y_start)
     end_dist = distance_to_goal(x_end, y_end)
@@ -222,6 +242,67 @@ def is_progressive_pass(x_start, y_start, x_end, y_end):
     if start_opp and end_opp:
         return progress >= WYSCOUT_PROG_OPP_HALF
     return progress >= WYSCOUT_PROG_CROSS_HALF
+
+
+def is_progressive_opta(x_start, y_start, x_end, y_end) -> bool:
+    """Opta progressive pass: completed pass from attacking 2/3, ≥25% closer to goal."""
+    if x_start < OPT_ATTACKING_TWO_THIRDS_X:
+        return False
+    start_dist = distance_to_goal(x_start, y_start)
+    end_dist = distance_to_goal(x_end, y_end)
+    if start_dist <= 0:
+        return False
+    return (start_dist - end_dist) / start_dist >= OPT_PROGRESS_PCT
+
+
+def xt_relative_increase(xt_start: float, xt_end: float) -> float:
+    if xt_end <= xt_start:
+        return 0.0
+    if xt_start <= XT_EPS:
+        return float("inf")
+    return (xt_end - xt_start) / xt_start
+
+
+def classify_xt_progressive(xt_start: float, xt_end: float) -> str:
+    """Returns 'none', 'progressive', or 'highly'."""
+    if xt_end <= xt_start:
+        return "none"
+    pct = xt_relative_increase(xt_start, xt_end)
+    if pct == float("inf") or pct > XT_HIGH_PCT:
+        return "highly"
+    if pct >= XT_PROGRESS_PCT:
+        return "progressive"
+    return "none"
+
+
+def is_progressive_attempt(row, model: str) -> bool:
+    if model == PROG_MODEL_WYSCOUT:
+        return is_progressive_wyscout(row.x_start, row.y_start, row.x_end, row.y_end)
+    if model == PROG_MODEL_OPTA:
+        return is_progressive_opta(row.x_start, row.y_start, row.x_end, row.y_end)
+    return classify_xt_progressive(row.xt_start, row.xt_end) in ("progressive", "highly")
+
+
+def apply_progressive_model(df: pd.DataFrame, model: str) -> pd.DataFrame:
+    df = df.copy()
+    progressive_flags = []
+    highly_flags = []
+    for row in df.itertuples(index=False):
+        if model == PROG_MODEL_WYSCOUT:
+            attempt = is_progressive_wyscout(row.x_start, row.y_start, row.x_end, row.y_end)
+            highly = False
+        elif model == PROG_MODEL_OPTA:
+            attempt = is_progressive_opta(row.x_start, row.y_start, row.x_end, row.y_end)
+            highly = False
+        else:
+            xt_cat = classify_xt_progressive(row.xt_start, row.xt_end)
+            attempt = xt_cat in ("progressive", "highly")
+            highly = xt_cat == "highly"
+        progressive_flags.append(row.is_won and attempt)
+        highly_flags.append(row.is_won and highly)
+    df["progressive"] = progressive_flags
+    df["highly_progressive"] = highly_flags
+    return df
 
 
 def classify_pass_direction(x_start, y_start, x_end, y_end):
@@ -465,10 +546,8 @@ def events_to_dataframe(events: list, match_name: str) -> pd.DataFrame:
     dfm["match"] = match_name
     dfm["number"] = np.arange(1, len(dfm) + 1)
     dfm["is_won"] = dfm["type"].eq("PASS WON")
-    dfm["progressive"] = dfm.apply(
-        lambda r: r["is_won"] and is_progressive_pass(r["x_start"], r["y_start"], r["x_end"], r["y_end"]),
-        axis=1,
-    )
+    dfm["progressive"] = False
+    dfm["highly_progressive"] = False
     dfm["direction"] = dfm.apply(
         lambda r: classify_pass_direction(r["x_start"], r["y_start"], r["x_end"], r["y_end"]),
         axis=1,
@@ -508,7 +587,8 @@ def load_all_pass_data() -> tuple[dict, dict]:
     return hudson_dfs, wc_dfs
 
 
-def compute_stats(df: pd.DataFrame, match_name: str) -> dict:
+def compute_stats(df: pd.DataFrame, match_name: str, prog_model: str = PROG_MODEL_WYSCOUT) -> dict:
+    df = apply_progressive_model(df, prog_model)
     total = len(df)
     mins = get_match_minutes(match_name)
     p90_factor = 90.0 / mins if mins > 0 else 1.0
@@ -521,6 +601,7 @@ def compute_stats(df: pd.DataFrame, match_name: str) -> dict:
             "progressive_attempted": 0,
             "progressive_successful": 0,
             "progressive_accuracy_pct": 0.0,
+            "highly_progressive": 0,
             "to_final_third_total": 0,
             "to_final_third_success": 0,
             "to_final_third_accuracy_pct": 0.0,
@@ -550,15 +631,8 @@ def compute_stats(df: pd.DataFrame, match_name: str) -> dict:
     unsuccessful = total - successful
     accuracy = successful / total * 100.0
     progressive_total = int(df["progressive"].sum())
-    progressive_unsuccessful = int(
-        (
-            ~df["is_won"]
-            & df.apply(
-                lambda r: is_progressive_pass(r["x_start"], r["y_start"], r["x_end"], r["y_end"]),
-                axis=1,
-            )
-        ).sum()
-    )
+    highly_progressive = int(df["highly_progressive"].sum())
+    progressive_unsuccessful = int((~df["is_won"] & df.apply(lambda r: is_progressive_attempt(r, prog_model), axis=1)).sum())
     progressive_attempted = progressive_total + progressive_unsuccessful
     progressive_accuracy = (progressive_total / progressive_attempted * 100.0) if progressive_attempted else 0.0
     to_final_third = (df["x_start"] < FINAL_THIRD_LINE_X) & (df["x_end"] >= FINAL_THIRD_LINE_X)
@@ -598,6 +672,7 @@ def compute_stats(df: pd.DataFrame, match_name: str) -> dict:
         "accuracy_pct": round(accuracy, 2),
         "progressive_attempted": progressive_attempted,
         "progressive_successful": progressive_total,
+        "highly_progressive": highly_progressive,
         "progressive_accuracy_pct": round(progressive_accuracy, 2),
         "to_final_third_total": to_final_third_total,
         "to_final_third_success": to_final_third_success,
@@ -717,13 +792,16 @@ def _save_fig(fig):
     return Image.open(buf)
 
 
-def draw_pass_map(df):
+def draw_pass_map(df, prog_model: str = PROG_MODEL_WYSCOUT):
     fig, ax, pitch = _base_pitch()
     for _, row in df.iterrows():
         is_lost = not row["is_won"]
+        is_highly = bool(row.get("highly_progressive", False))
         is_prog = bool(row["progressive"])
         if is_lost:
             color, alpha = COLOR_FAIL, 0.72
+        elif is_highly:
+            color, alpha = COLOR_HIGHLY_PROGRESSIVE, 0.95
         elif is_prog:
             color, alpha = COLOR_PROGRESSIVE, 0.88
         else:
@@ -753,12 +831,18 @@ def draw_pass_map(df):
             zorder=6,
             alpha=alpha,
         )
+    legend_handles = [
+        Line2D([0], [0], color=COLOR_SUCCESS, lw=2.0, label="Completed", alpha=0.65),
+        Line2D([0], [0], color=COLOR_PROGRESSIVE, lw=2.0, label="Progressive", alpha=0.90),
+        Line2D([0], [0], color=COLOR_FAIL, lw=2.0, label="Incomplete", alpha=0.90),
+    ]
+    if prog_model == PROG_MODEL_XT:
+        legend_handles.insert(
+            2,
+            Line2D([0], [0], color=COLOR_HIGHLY_PROGRESSIVE, lw=2.0, label="Highly Progressive", alpha=0.95),
+        )
     leg = ax.legend(
-        handles=[
-            Line2D([0], [0], color=COLOR_SUCCESS, lw=2.0, label="Completed", alpha=0.65),
-            Line2D([0], [0], color=COLOR_PROGRESSIVE, lw=2.0, label="Progressive", alpha=0.90),
-            Line2D([0], [0], color=COLOR_FAIL, lw=2.0, label="Incomplete", alpha=0.90),
-        ],
+        handles=legend_handles,
         loc="upper left",
         bbox_to_anchor=(0.01, 0.99),
         frameon=True,
@@ -900,8 +984,8 @@ def draw_top_xt_map(df, top_n=5):
     return _save_fig(fig), fig
 
 
-def render_player_maps(df: pd.DataFrame):
-    img_pm, fig_pm = draw_pass_map(df)
+def render_player_maps(df: pd.DataFrame, prog_model: str):
+    img_pm, fig_pm = draw_pass_map(df, prog_model)
     plt.close(fig_pm)
     st.markdown('<div class="map-label">Pass Map</div>', unsafe_allow_html=True)
     st.image(img_pm, use_container_width=True)
@@ -917,7 +1001,16 @@ def render_player_maps(df: pd.DataFrame):
     st.image(img_xt, use_container_width=True)
 
 
-def render_player_cards(stats: dict, tone: str):
+def render_player_cards(stats: dict, tone: str, prog_model: str):
+    progressive_items = [
+        ("Progressive Passes", f"{stats['progressive_successful']:.0f}"),
+        ("% Progressive Accuracy", f"{stats['progressive_accuracy_pct']:.1f}%"),
+    ]
+    if prog_model == PROG_MODEL_XT:
+        progressive_items.insert(
+            1,
+            ("Highly Progressive", f"{stats['highly_progressive']:.0f}"),
+        )
     stats_section_card(
         "Overview",
         tone,
@@ -926,14 +1019,7 @@ def render_player_cards(stats: dict, tone: str):
             ("% Accuracy", f"{stats['accuracy_pct']:.1f}%"),
         ],
     )
-    stats_section_card(
-        "Progressive",
-        tone,
-        [
-            ("Progressive Passes", f"{stats['progressive_successful']:.0f}"),
-            ("% Progressive Accuracy", f"{stats['progressive_accuracy_pct']:.1f}%"),
-        ],
-    )
+    stats_section_card("Progressive", tone, progressive_items)
     stats_section_card(
         "Impact",
         tone,
@@ -955,8 +1041,6 @@ if not hudson_dfs or BENTANCUR_KEY not in wc_dfs or BOUADDI_KEY not in wc_dfs:
     st.stop()
 
 hudson_match_names = list(hudson_dfs.keys())
-bentancur_df = wc_dfs[BENTANCUR_KEY]
-bouaddi_df = wc_dfs[BOUADDI_KEY]
 
 # ── SIDEBAR (sem customização) ─────────────────────────────────
 st.sidebar.markdown(
@@ -984,6 +1068,17 @@ st.sidebar.markdown(
     unsafe_allow_html=True,
 )
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Critério de Progressive Pass**")
+prog_model = st.sidebar.radio(
+    "Modelo de avaliação",
+    options=list(PROG_MODEL_LABELS.keys()),
+    format_func=lambda k: PROG_MODEL_LABELS[k],
+    key="prog_model_selector",
+    label_visibility="collapsed",
+)
+st.sidebar.caption(PROG_MODEL_DESCRIPTIONS[prog_model])
+
 # ── MAIN LAYOUT ────────────────────────────────────────────────
 st.markdown("## Passes — Comparação de Jogadores")
 st.caption("Hudson Cicala vs Bentancur (vs Arábia Saudita) vs Bouaddi (vs Brasil)")
@@ -995,10 +1090,13 @@ selected_hudson_match = st.selectbox(
     key="hudson_match_selector",
 )
 
-hudson_df = hudson_dfs[selected_hudson_match]
-hudson_stats = compute_stats(hudson_df, selected_hudson_match)
-bentancur_stats = compute_stats(bentancur_df, BENTANCUR_KEY)
-bouaddi_stats = compute_stats(bouaddi_df, BOUADDI_KEY)
+hudson_df = apply_progressive_model(hudson_dfs[selected_hudson_match], prog_model)
+bentancur_df = apply_progressive_model(wc_dfs[BENTANCUR_KEY], prog_model)
+bouaddi_df = apply_progressive_model(wc_dfs[BOUADDI_KEY], prog_model)
+
+hudson_stats = compute_stats(hudson_df, selected_hudson_match, prog_model)
+bentancur_stats = compute_stats(bentancur_df, BENTANCUR_KEY, prog_model)
+bouaddi_stats = compute_stats(bouaddi_df, BOUADDI_KEY, prog_model)
 
 players = [
     {
@@ -1025,21 +1123,21 @@ players = [
 ]
 
 st.markdown("---")
-st.markdown("### Mapas de Passe")
+st.markdown(f"### Mapas de Passe — {PROG_MODEL_LABELS[prog_model]}")
 
 map_cols = st.columns(3)
 for col, player in zip(map_cols, players):
     with col:
         st.markdown(f'<div class="player-header">{player["name"]}</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="player-sub">{player["subtitle"]}</div>', unsafe_allow_html=True)
-        render_player_maps(player["df"])
+        render_player_maps(player["df"], prog_model)
 
 st.markdown("---")
-st.markdown("### Estatísticas do jogo")
+st.markdown(f"### Estatísticas do jogo — {PROG_MODEL_LABELS[prog_model]}")
 
 stat_cols = st.columns(3)
 for col, player in zip(stat_cols, players):
     with col:
         st.markdown(f'<div class="player-header">{player["name"]}</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="player-sub">{player["subtitle"]}</div>', unsafe_allow_html=True)
-        render_player_cards(player["stats"], player["tone"])
+        render_player_cards(player["stats"], player["tone"], prog_model)
