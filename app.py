@@ -71,7 +71,7 @@ ALPHA_SUCCESS = 0.07
 PASS_TONES = ["#5b9bd5", "#3b82f6", "#1d4ed8"]
 PLAYER_TONES = {
     "Hudson Cicala": "#5b9bd5",
-    "MacAllister": "#70ad47",
+    "Bentancur": "#70ad47",
     "Bouaddi": "#d4a843",
 }
 CMAP_TOP10 = LinearSegmentedColormap.from_list("top10", ["#fef08a", "#f97316", "#b91c1c"])
@@ -82,9 +82,109 @@ LATERAL_MIN_DIST = 12.0
 
 HUDSON_DOCX = "Passes - Hudson Cicala.docx"
 WORLD_CUP_DOCX = "Passes World Cup.docx"
-MACALLISTER_KEY = "MacAllister (vs Argelia)"
+BENTANCUR_KEY = "Bentancur (vs Saudi Arabia)"
 BOUADDI_KEY = "Bouaddi (vs Brasil)"
+INVERTED_WC_PLAYERS = {BENTANCUR_KEY, BOUADDI_KEY}
 WORLD_CUP_MINUTES = 90.0
+
+BENTANCUR_RAW_DATA = """
+All Passes – Bentancur (vs Saudi Arabia)
+
+Seta 1: (55.02, 27.93) -> (42.16, 25.77)
+Seta 2: (32.29, 46.06) -> (33.70, 59.96)
+Seta 3: (48.26, 47.65) -> (65.82, 43.05)
+Seta 4: (46.01, 58.08) -> (35.49, 57.33)
+Seta 5: (47.32, 59.21) -> (56.90, 58.36)
+Seta 6: (46.29, 59.49) -> (56.06, 76.11)
+Seta 7: (69.67, 60.80) -> (74.09, 61.74)
+Seta 8: (63.29, 42.96) -> (49.76, 75.36)
+Seta 9: (62.91, 23.52) -> (69.77, 27.46)
+Seta 10: (72.96, 17.98) -> (61.88, 15.16)
+Seta 1: (12.10, 19.57) -> (3.27, 48.69)
+Seta 2: (34.45, 24.27) -> (27.60, 19.29)
+Seta 3: (62.07, 10.37) -> (76.53, 4.55)
+Seta 4: (62.82, 43.52) -> (65.17, 57.61)
+Seta 5: (67.42, 33.94) -> (68.73, 37.79)
+Seta 6: (66.95, 26.62) -> (60.19, 36.29)
+Seta 7: (69.96, 36.76) -> (70.61, 26.24)
+Seta 8: (69.86, 48.88) -> (88.36, 36.38)
+Seta 9: (71.27, 45.96) -> (72.40, 65.40)
+Seta 10: (75.12, 32.16) -> (75.78, 18.82)
+Seta 11: (79.07, 27.93) -> (85.92, 32.06)
+Seta 1: (32.01, 25.49) -> (35.21, 43.90)
+Seta 2: (41.69, 58.92) -> (27.97, 56.29)
+Seta 3: (51.45, 30.94) -> (35.02, 25.68)
+Seta 4: (69.11, 50.85) -> (74.56, 32.72)
+Seta 5: (73.81, 39.20) -> (63.47, 47.94)
+Seta 6: (72.96, 64.18) -> (80.47, 55.36)
+Seta 7: (85.83, 46.06) -> (81.60, 51.88)
+Seta 8: (80.85, 73.48) -> (97.47, 61.55)
+Seta 9: (92.59, 52.54) -> (88.18, 47.56)
+Seta 10: (93.34, 66.63) -> (105.83, 45.02)
+Seta 11: (106.68, 59.68) -> (109.31, 74.61)
+Seta 1: (78.50, 31.22) -> (62.25, 70.95)
+Seta 2: (77.00, 29.72) -> (70.61, 21.64)
+Seta 3: (68.73, 48.31) -> (83.39, 48.31)
+Seta 4: (60.94, 42.21) -> (74.93, 56.86)
+Seta 5: (52.11, 40.61) -> (47.23, 18.07)
+Seta 6: (51.64, 48.22) -> (71.27, 41.17)
+Seta 7: (72.49, 32.25) -> (46.85, 21.17)
+Seta 8: (50.33, 13.56) -> (57.46, 27.18)
+Seta 9: (47.70, 11.78) -> (52.20, 25.68)
+Seta 10: (46.19, 9.43) -> (30.04, 5.58)
+Seta 11: (43.75, 17.88) -> (53.71, 20.04)
+Seta 12: (39.90, 16.00) -> (36.90, 21.92)
+Seta 13: (27.97, 16.57) -> (20.84, 4.64)
+Seta 14: (35.58, 28.50) -> (24.69, 30.37)
+Seta 15: (29.38, 29.72) -> (35.30, 39.30)
+Seta 16: (34.92, 30.94) -> (20.65, 25.58)
+Seta 17: (35.58, 45.96) -> (27.32, 24.93)
+Seta 1: (82.16, 47.00) -> (73.05, 62.40)
+Seta 2: (80.10, 57.33) -> (97.19, 46.81)
+Seta 3: (66.01, 51.32) -> (66.10, 26.80)
+Seta 4: (52.11, 50.57) -> (58.50, 37.42)
+Seta 5: (46.38, 35.45) -> (29.10, 7.18)
+Seta 6: (45.63, 49.25) -> (44.79, 60.61)
+Seta 7: (38.87, 56.48) -> (21.40, 73.20)
+Seta 8: (33.70, 49.16) -> (16.80, 70.95)
+Seta 9: (31.36, 48.03) -> (28.26, 61.18)
+Seta 10: (35.02, 47.09) -> (37.46, 40.80)
+Seta 1: (78.60, 24.55) -> (63.19, 46.25)
+Seta 2: (63.10, 15.72) -> (73.15, 47.00)
+Seta 3: (55.12, 34.98) -> (48.26, 8.58)
+Seta 4: (41.87, 48.97) -> (41.87, 28.68)
+Seta 5: (41.97, 34.98) -> (0.83, 19.85)
+Seta 6: (40.37, 21.17) -> (45.35, 20.51)
+Seta 7: (39.06, 18.92) -> (28.35, 7.08)
+Seta 8: (36.52, 20.23) -> (33.05, 42.77)
+Seta 9: (32.86, 16.47) -> (32.20, 33.00)
+Seta 10: (30.23, 14.88) -> (14.26, 27.18)
+Seta 11: (22.15, 9.90) -> (25.16, 30.19)
+Seta 12: (24.50, 30.47) -> (18.96, 12.25)
+Seta 1: (87.52, 69.54) -> (108.84, 53.76)
+Seta 2: (79.91, 41.93) -> (65.54, 63.81)
+Seta 3: (71.46, 47.18) -> (68.83, 29.53)
+Seta 4: (70.99, 25.58) -> (73.81, 51.04)
+Seta 5: (41.78, 53.29) -> (42.34, 28.59)
+Seta 6: (36.90, 49.72) -> (31.17, 37.89)
+Seta 7: (34.45, 39.67) -> (33.05, 52.73)
+Seta 8: (38.68, 35.45) -> (38.12, 56.67)
+Seta 9: (39.81, 31.50) -> (29.85, 33.10)
+
+Passes Errados
+Seta 1: (36.43, 33.75) -> (0.46, 18.82)
+Seta 2: (30.79, 12.06) -> (13.61, 25.96)
+Seta 3: (69.58, 33.00) -> (71.55, 38.83)
+Seta 4: (72.96, 63.90) -> (78.13, 65.78)
+Seta 5: (64.23, 20.51) -> (70.05, 23.99)
+Seta 6: (89.02, 45.87) -> (83.95, 53.29)
+Seta 7: (93.90, 51.04) -> (90.15, 46.43)
+Seta 8: (78.88, 23.89) -> (74.09, 17.13)
+Seta 9: (78.78, 25.30) -> (85.26, 28.78)
+Seta 10: (48.17, 28.50) -> (34.08, 22.20)
+Seta 11: (34.45, 17.69) -> (29.29, 15.16)
+Seta 12: (34.92, 26.15) -> (19.71, 23.42)
+"""
 
 SGA_RANGE_METRICS = {
     "xt_p90": "1.7 – 2.0",
@@ -188,7 +288,7 @@ def apply_date_mapping(name: str) -> str:
 
 
 def get_match_minutes(match_name: str, hudson_matches: list[str] | None = None) -> float:
-    if match_name in (MACALLISTER_KEY, BOUADDI_KEY):
+    if match_name in INVERTED_WC_PLAYERS:
         return WORLD_CUP_MINUTES
     name_lower = match_name.lower()
     if "houston" in name_lower:
@@ -238,7 +338,7 @@ def parse_hudson_docx(raw_text: str) -> dict:
 
 
 def invert_pitch_coords(x1: float, y1: float, x2: float, y2: float) -> tuple[float, float, float, float]:
-    """Rotate pitch coordinates 180° so attack direction matches Hudson/MacAllister."""
+    """Rotate pitch coordinates 180° so attack direction matches Hudson."""
     return FIELD_X - x1, FIELD_Y - y1, FIELD_X - x2, FIELD_Y - y2
 
 
@@ -296,18 +396,19 @@ def reconcile_failed_passes(
 
 
 def apply_player_orientation(player: str, x1: float, y1: float, x2: float, y2: float) -> tuple[float, float, float, float]:
-    if player == BOUADDI_KEY:
+    if player in INVERTED_WC_PLAYERS:
         return invert_pitch_coords(x1, y1, x2, y2)
     return x1, y1, x2, y2
 
 
-def parse_world_cup_docx(raw_text: str) -> dict:
+def parse_player_passes_text(raw_text: str) -> dict:
     lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
     players_totais: dict[str, list[np.ndarray]] = {}
     players_errados: dict[str, list[np.ndarray]] = {}
     current_player = None
     current_mode = "totais"
-    re_player = re.compile(r"^Passes\s+Totais\s*\|\s*(.+)$", re.IGNORECASE)
+    re_player_tot = re.compile(r"^Passes\s+Totais\s*\|\s*(.+)$", re.IGNORECASE)
+    re_player_all = re.compile(r"^All\s+Passes\s*[–-]\s*(.+)$", re.IGNORECASE)
     re_fail_section = re.compile(r"^Passes\s+Errados:?$", re.IGNORECASE)
     re_arrow = re.compile(
         r"^Seta\s+\d+:\s*\(([-+]?\d*\.?\d+),\s*([-+]?\d*\.?\d+)\)\s*->\s*\(([-+]?\d*\.?\d+),\s*([-+]?\d*\.?\d+)\)$",
@@ -315,11 +416,8 @@ def parse_world_cup_docx(raw_text: str) -> dict:
     )
 
     for ln in lines:
-        m_player = re_player.match(ln)
+        m_player = re_player_tot.match(ln) or re_player_all.match(ln)
         if m_player:
-            if current_player and current_player not in players_totais:
-                players_totais[current_player] = []
-                players_errados.setdefault(current_player, [])
             current_player = m_player.group(1).strip()
             players_totais.setdefault(current_player, [])
             players_errados.setdefault(current_player, [])
@@ -357,6 +455,10 @@ def parse_world_cup_docx(raw_text: str) -> dict:
     return players
 
 
+def parse_world_cup_docx(raw_text: str) -> dict:
+    return parse_player_passes_text(raw_text)
+
+
 def events_to_dataframe(events: list, match_name: str) -> pd.DataFrame:
     dfm = pd.DataFrame(events, columns=["type", "x_start", "y_start", "x_end", "y_end", "video"])
     dfm["match"] = match_name
@@ -384,11 +486,22 @@ def events_to_dataframe(events: list, match_name: str) -> pd.DataFrame:
 
 def load_all_pass_data() -> tuple[dict, dict]:
     hudson_path = Path(HUDSON_DOCX)
-    wc_path = Path(WORLD_CUP_DOCX)
-    if not hudson_path.exists() or not wc_path.exists():
+    if not hudson_path.exists():
         return {}, {}
+
     hudson_raw = parse_hudson_docx(read_docx_text(hudson_path))
-    wc_raw = parse_world_cup_docx(read_docx_text(wc_path))
+    wc_raw: dict[str, list] = {}
+
+    bentancur_parsed = parse_player_passes_text(BENTANCUR_RAW_DATA)
+    if BENTANCUR_KEY in bentancur_parsed:
+        wc_raw[BENTANCUR_KEY] = bentancur_parsed[BENTANCUR_KEY]
+
+    wc_path = Path(WORLD_CUP_DOCX)
+    if wc_path.exists():
+        wc_doc = parse_player_passes_text(read_docx_text(wc_path))
+        if BOUADDI_KEY in wc_doc:
+            wc_raw[BOUADDI_KEY] = wc_doc[BOUADDI_KEY]
+
     hudson_dfs = {name: events_to_dataframe(events, name) for name, events in hudson_raw.items()}
     wc_dfs = {name: events_to_dataframe(events, name) for name, events in wc_raw.items()}
     return hudson_dfs, wc_dfs
@@ -992,7 +1105,7 @@ def render_player_cards(stats: dict, tone: str):
 # ── DATA LOAD ──────────────────────────────────────────────────
 hudson_dfs, wc_dfs = load_all_pass_data()
 
-if not hudson_dfs or MACALLISTER_KEY not in wc_dfs or BOUADDI_KEY not in wc_dfs:
+if not hudson_dfs or BENTANCUR_KEY not in wc_dfs or BOUADDI_KEY not in wc_dfs:
     st.error(
         "Não foi possível carregar os dados. Verifique se os arquivos "
         f"'{HUDSON_DOCX}' e '{WORLD_CUP_DOCX}' estão no diretório do app."
@@ -1000,7 +1113,7 @@ if not hudson_dfs or MACALLISTER_KEY not in wc_dfs or BOUADDI_KEY not in wc_dfs:
     st.stop()
 
 hudson_match_names = list(hudson_dfs.keys())
-macallister_df = wc_dfs[MACALLISTER_KEY]
+bentancur_df = wc_dfs[BENTANCUR_KEY]
 bouaddi_df = wc_dfs[BOUADDI_KEY]
 
 _pass_base = {}
@@ -1032,7 +1145,7 @@ st.sidebar.markdown(
     """
     <div style="color:#94a3b8;font-size:0.85rem;line-height:1.5;">
       Comparação de passes por partida.<br>
-      MacAllister e Bouaddi: jogos fixos da Copa do Mundo.<br>
+      Bentancur e Bouaddi: jogos fixos da Copa do Mundo.<br>
       Hudson: selecione o jogo na área principal.
     </div>
     """,
@@ -1041,7 +1154,7 @@ st.sidebar.markdown(
 
 # ── MAIN LAYOUT ────────────────────────────────────────────────
 st.markdown("## Passes — Comparação de Jogadores")
-st.caption("Hudson Cicala vs MacAllister (vs Argélia) vs Bouaddi (vs Brasil)")
+st.caption("Hudson Cicala vs Bentancur (vs Arábia Saudita) vs Bouaddi (vs Brasil)")
 
 selected_hudson_match = st.selectbox(
     "Selecione o jogo de Hudson Cicala para comparar",
@@ -1052,7 +1165,7 @@ selected_hudson_match = st.selectbox(
 
 hudson_df = hudson_dfs[selected_hudson_match]
 hudson_stats = compute_stats(hudson_df, selected_hudson_match)
-macallister_stats = compute_stats(macallister_df, MACALLISTER_KEY)
+bentancur_stats = compute_stats(bentancur_df, BENTANCUR_KEY)
 bouaddi_stats = compute_stats(bouaddi_df, BOUADDI_KEY)
 
 players = [
@@ -1064,11 +1177,11 @@ players = [
         "tone": PLAYER_TONES["Hudson Cicala"],
     },
     {
-        "name": "MacAllister",
-        "subtitle": "Copa do Mundo — vs Argélia",
-        "df": macallister_df,
-        "stats": macallister_stats,
-        "tone": PLAYER_TONES["MacAllister"],
+        "name": "Bentancur",
+        "subtitle": "Copa do Mundo — vs Arábia Saudita",
+        "df": bentancur_df,
+        "stats": bentancur_stats,
+        "tone": PLAYER_TONES["Bentancur"],
     },
     {
         "name": "Bouaddi",
