@@ -87,8 +87,7 @@ HUDSON_DOCX = "Passes - Hudson Cicala.docx"
 WORLD_CUP_DOCX = "Passes World Cup.docx"
 BENTANCUR_KEY = "Bentancur (vs Saudi Arabia)"
 BOUADDI_KEY = "Bouaddi (vs Brasil)"
-INVERTED_WC_PLAYERS = {BOUADDI_KEY}
-REVERSE_ATTACK_PLAYERS = {BENTANCUR_KEY}
+INVERTED_WC_PLAYERS = {BENTANCUR_KEY, BOUADDI_KEY}
 WORLD_CUP_MINUTES = 90.0
 
 BENTANCUR_RAW_DATA = """
@@ -290,7 +289,7 @@ def apply_date_mapping(name: str) -> str:
 
 
 def get_match_minutes(match_name: str, hudson_matches: list[str] | None = None) -> float:
-    if match_name in INVERTED_WC_PLAYERS or match_name in REVERSE_ATTACK_PLAYERS:
+    if match_name in INVERTED_WC_PLAYERS:
         return WORLD_CUP_MINUTES
     name_lower = match_name.lower()
     if "houston" in name_lower:
@@ -339,13 +338,8 @@ def parse_hudson_docx(raw_text: str) -> dict:
     return {k: v for k, v in matches.items() if len(v) > 0}
 
 
-def reverse_attack_direction_coords(x1: float, y1: float, x2: float, y2: float) -> tuple[float, float, float, float]:
-    """Convert right-to-left attack data to left-to-right (mirror X, keep flank)."""
-    return FIELD_X - x1, y1, FIELD_X - x2, y2
-
-
 def invert_pitch_coords(x1: float, y1: float, x2: float, y2: float) -> tuple[float, float, float, float]:
-    """Rotate pitch coordinates 180° (used for Bouaddi)."""
+    """Rotate pitch coordinates 180° clockwise (same as rotating the pass map)."""
     return FIELD_X - x1, FIELD_Y - y1, FIELD_X - x2, FIELD_Y - y2
 
 
@@ -403,8 +397,6 @@ def reconcile_failed_passes(
 
 
 def apply_player_orientation(player: str, x1: float, y1: float, x2: float, y2: float) -> tuple[float, float, float, float]:
-    if player in REVERSE_ATTACK_PLAYERS:
-        return reverse_attack_direction_coords(x1, y1, x2, y2)
     if player in INVERTED_WC_PLAYERS:
         return invert_pitch_coords(x1, y1, x2, y2)
     return x1, y1, x2, y2
