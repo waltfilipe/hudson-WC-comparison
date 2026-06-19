@@ -10,3 +10,4 @@ mplcursors
 reportlab
 openpyxl
 html2image
+databallpy
