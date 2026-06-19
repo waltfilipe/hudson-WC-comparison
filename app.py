@@ -9,6 +9,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from mplsoccer import Pitch, Sbopen
+from databallpy.events.base_event import OPEN_PLAY_XT
+from databallpy.models.utils import get_xt_prediction as databallpy_get_xt_prediction
 import pandas as pd
 import numpy as np
 from PIL import Image
@@ -77,16 +79,21 @@ PLAYER_TONES = {
 }
 CMAP_TOP10 = LinearSegmentedColormap.from_list("top10", ["#fef08a", "#f97316", "#b91c1c"])
 NX_XT, NY_XT = 16, 12
+DATABALLPY_PITCH_LENGTH = 106.0
+DATABALLPY_PITCH_WIDTH = 68.0
 LATERAL_MIN_DIST = 12.0
 XT_MODEL_HEURISTIC = "heuristic"
 XT_MODEL_STATSBOMB = "statsbomb"
+XT_MODEL_DATABALLPY = "databallpy"
 XT_MODEL_LABELS = {
     XT_MODEL_HEURISTIC: "Heurístico",
     XT_MODEL_STATSBOMB: "StatsBomb (Karun Singh)",
+    XT_MODEL_DATABALLPY: "DataBallPy (open play)",
 }
 XT_MODEL_DESCRIPTIONS = {
     XT_MODEL_HEURISTIC: "Grade sintética normalizada (0–1) por proximidade ao gol.",
     XT_MODEL_STATSBOMB: "Markov chain — FA WSL 2019/20, probabilidade de gol por célula.",
+    XT_MODEL_DATABALLPY: "Modelo pré-treinado open play (264×196), coords convertidas de StatsBomb.",
 }
 WYSCOUT_PROG_OWN_HALF = 30.0
 WYSCOUT_PROG_CROSS_HALF = 15.0
@@ -443,10 +450,48 @@ def compute_statsbomb_xt_grid():
     return xt
 
 
+def statsbomb_to_databallpy(x_sb: float, y_sb: float) -> tuple[float, float]:
+    """Convert StatsBomb 120×80 (attack → right) to DataBallPy 106×68 (centered, goal at +x)."""
+    x_db = (x_sb / FIELD_X) * DATABALLPY_PITCH_LENGTH - (DATABALLPY_PITCH_LENGTH / 2.0)
+    y_db = (y_sb / FIELD_Y) * DATABALLPY_PITCH_WIDTH - (DATABALLPY_PITCH_WIDTH / 2.0)
+    return x_db, y_db
+
+
+def databallpy_xt_value(x_sb: float, y_sb: float) -> float:
+    x_db, y_db = statsbomb_to_databallpy(x_sb, y_sb)
+    return float(databallpy_get_xt_prediction(x_db, y_db, OPEN_PLAY_XT))
+
+
+@st.cache_data(show_spinner=False)
+def compute_databallpy_xt_grid() -> np.ndarray:
+    """Resample DataBallPy open-play xT onto the app 16×12 StatsBomb grid."""
+    grid = np.zeros((NY_XT, NX_XT))
+    x_bins = np.linspace(0, FIELD_X, NX_XT + 1)
+    y_bins = np.linspace(0, FIELD_Y, NY_XT + 1)
+    for iy in range(NY_XT):
+        for ix in range(NX_XT):
+            cx = (x_bins[ix] + x_bins[ix + 1]) / 2.0
+            cy = (y_bins[iy] + y_bins[iy + 1]) / 2.0
+            grid[iy, ix] = databallpy_xt_value(cx, cy)
+    return grid
+
+
 def get_xt_grid(xt_model: str) -> np.ndarray:
     if xt_model == XT_MODEL_STATSBOMB:
         return compute_statsbomb_xt_grid()
+    if xt_model == XT_MODEL_DATABALLPY:
+        return compute_databallpy_xt_grid()
     return compute_heuristic_xt_grid()
+
+
+def apply_xt_model(df: pd.DataFrame, xt_model: str) -> pd.DataFrame:
+    if xt_model == XT_MODEL_DATABALLPY:
+        out = df.copy()
+        out["xt_start"] = out.apply(lambda r: databallpy_xt_value(r["x_start"], r["y_start"]), axis=1)
+        out["xt_end"] = out.apply(lambda r: databallpy_xt_value(r["x_end"], r["y_end"]), axis=1)
+        out["delta_xt"] = np.where(out["is_won"], out["xt_end"] - out["xt_start"], 0.0)
+        return out
+    return apply_xt_grid(df, get_xt_grid(xt_model))
 
 
 def xt_value_from_grid(x: float, y: float, grid: np.ndarray) -> float:
@@ -670,8 +715,7 @@ def events_to_dataframe(events: list, match_name: str) -> pd.DataFrame:
 
 
 def prepare_player_df(df: pd.DataFrame, xt_model: str, prog_model: str) -> pd.DataFrame:
-    grid = get_xt_grid(xt_model)
-    return apply_progressive_model(apply_xt_grid(df, grid), prog_model)
+    return apply_progressive_model(apply_xt_model(df, xt_model), prog_model)
 
 
 def load_all_pass_data() -> tuple[dict, dict]:
@@ -1147,9 +1191,9 @@ def draw_xt_grid_map(grid: np.ndarray, title: str, value_fmt: str = ".2f", as_pe
     return _save_fig(fig), fig
 
 
-def draw_xt_diff_map(heuristic_grid: np.ndarray, sb_grid: np.ndarray):
-    """Heatmap of cell-wise difference (heuristic normalized − StatsBomb normalized)."""
-    diff = _normalize_grid(heuristic_grid) - _normalize_grid(sb_grid)
+def draw_xt_diff_map(grid_a: np.ndarray, grid_b: np.ndarray, title: str):
+    """Heatmap of cell-wise difference (grid_a normalized − grid_b normalized)."""
+    diff = _normalize_grid(grid_a) - _normalize_grid(grid_b)
     fig, ax, pitch = _base_pitch()
     x_bins = np.linspace(0, FIELD_X, NX_XT + 1)
     y_bins = np.linspace(0, FIELD_Y, NY_XT + 1)
@@ -1179,10 +1223,7 @@ def draw_xt_diff_map(heuristic_grid: np.ndarray, sb_grid: np.ndarray):
                 color="#ffffff" if abs(value) > vmax * 0.35 else "#c7cdda",
                 fontsize=5.5, fontweight="600", zorder=4,
             )
-    ax.set_title(
-        "Diferença de xT (Heurístico − StatsBomb, ambos normalizados 0–1)",
-        color="#eef1f7", fontsize=9, pad=8,
-    )
+    ax.set_title(title, color="#eef1f7", fontsize=9, pad=8)
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     cbar = fig.colorbar(sm, ax=ax, fraction=0.020, pad=0.02, shrink=0.55)
     cbar.set_label("Δ normalizado", color="#ffffff", fontsize=7)
@@ -1192,53 +1233,23 @@ def draw_xt_diff_map(heuristic_grid: np.ndarray, sb_grid: np.ndarray):
     return _save_fig(fig), fig
 
 
-def build_xt_comparison_pdf() -> bytes:
-    from reportlab.lib.pagesizes import A4, landscape
+def _pdf_draw_image_row(c, images_labels, page_w, page_h, y_top, row_h, margin_x=36, gap=10):
     from reportlab.lib.utils import ImageReader
-    from reportlab.pdfgen import canvas
 
-    h_grid = compute_heuristic_xt_grid()
-    sb_grid = compute_statsbomb_xt_grid()
-
-    img_h, fig_h = draw_xt_grid_map(h_grid, "xT Heurístico (0–1)", value_fmt=".2f")
-    plt.close(fig_h)
-    img_sb, fig_sb = draw_xt_grid_map(sb_grid, "xT StatsBomb — prob. gol", value_fmt=".3f")
-    plt.close(fig_sb)
-    img_diff, fig_diff = draw_xt_diff_map(h_grid, sb_grid)
-    plt.close(fig_diff)
-
-    buf = BytesIO()
-    page_w, page_h = landscape(A4)
-    c = canvas.Canvas(buf, pagesize=landscape(A4))
-    c.setFillColorRGB(0.1, 0.1, 0.16)
-    c.rect(0, 0, page_w, page_h, fill=1, stroke=0)
-    c.setFillColorRGB(0.93, 0.95, 0.97)
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(36, page_h - 36, "Comparativo de Modelos xT — Grade 16×12")
-    c.setFont("Helvetica", 9)
-    c.setFillColorRGB(0.58, 0.64, 0.72)
-    c.drawString(
-        36, page_h - 52,
-        "Heurístico (app) vs StatsBomb Karun Singh (FA WSL 2019/20) | Vermelho = heurístico maior",
-    )
-
-    panel_w = (page_w - 72 - 24) / 3
-    panel_h = page_h - 90
-    y0 = 28
-    for idx, (img, label) in enumerate([
-        (img_h, "Heurístico"),
-        (img_sb, "StatsBomb"),
-        (img_diff, "Diferença"),
-    ]):
-        x0 = 36 + idx * (panel_w + 12)
+    n = len(images_labels)
+    usable_w = page_w - 2 * margin_x - gap * (n - 1)
+    panel_w = usable_w / n
+    y0 = y_top - row_h
+    for idx, (img, label) in enumerate(images_labels):
+        x0 = margin_x + idx * (panel_w + gap)
         c.setFillColorRGB(0.93, 0.95, 0.97)
         c.setFont("Helvetica-Bold", 10)
-        c.drawString(x0, page_h - 72, label)
+        c.drawString(x0, y_top + 4, label)
         img_buf = BytesIO()
         img.save(img_buf, format="PNG")
         img_buf.seek(0)
         aspect = img.width / img.height
-        draw_h = panel_h
+        draw_h = row_h
         draw_w = draw_h * aspect
         if draw_w > panel_w:
             draw_w = panel_w
@@ -1249,6 +1260,73 @@ def build_xt_comparison_pdf() -> bytes:
             preserveAspectRatio=True, anchor="sw",
         )
 
+
+def build_xt_comparison_pdf() -> bytes:
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.pdfgen import canvas
+
+    h_grid = compute_heuristic_xt_grid()
+    sb_grid = compute_statsbomb_xt_grid()
+    db_grid = compute_databallpy_xt_grid()
+
+    panels = [
+        (draw_xt_grid_map(h_grid, "xT Heurístico (0–1)", value_fmt=".2f")[0], "Heurístico"),
+        (draw_xt_grid_map(sb_grid, "xT StatsBomb", value_fmt=".3f")[0], "StatsBomb"),
+        (draw_xt_grid_map(db_grid, "xT DataBallPy", value_fmt=".3f")[0], "DataBallPy"),
+        (
+            draw_xt_diff_map(
+                h_grid, sb_grid,
+                "Δ Heurístico − StatsBomb (normalizados)",
+            )[0],
+            "Δ H − SB",
+        ),
+        (
+            draw_xt_diff_map(
+                h_grid, db_grid,
+                "Δ Heurístico − DataBallPy (normalizados)",
+            )[0],
+            "Δ H − DB",
+        ),
+        (
+            draw_xt_diff_map(
+                sb_grid, db_grid,
+                "Δ StatsBomb − DataBallPy (normalizados)",
+            )[0],
+            "Δ SB − DB",
+        ),
+    ]
+    plt.close("all")
+
+    buf = BytesIO()
+    page_w, page_h = landscape(A4)
+    c = canvas.Canvas(buf, pagesize=landscape(A4))
+
+    def _draw_page_header(subtitle: str):
+        c.setFillColorRGB(0.1, 0.1, 0.16)
+        c.rect(0, 0, page_w, page_h, fill=1, stroke=0)
+        c.setFillColorRGB(0.93, 0.95, 0.97)
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(36, page_h - 36, "Comparativo de Modelos xT — Grade 16×12")
+        c.setFont("Helvetica", 9)
+        c.setFillColorRGB(0.58, 0.64, 0.72)
+        c.drawString(36, page_h - 52, subtitle)
+
+    _draw_page_header(
+        "Grades por modelo | StatsBomb 120×80 · DataBallPy convertido para 106×68 centrado",
+    )
+    _pdf_draw_image_row(
+        c, panels[:3], page_w, page_h,
+        y_top=page_h - 68, row_h=page_h - 100,
+    )
+    c.showPage()
+
+    _draw_page_header(
+        "Diferenças normalizadas (0–1) | Vermelho = modelo da esquerda maior na subtração",
+    )
+    _pdf_draw_image_row(
+        c, panels[3:], page_w, page_h,
+        y_top=page_h - 68, row_h=page_h - 100,
+    )
     c.showPage()
     c.save()
     buf.seek(0)
@@ -1375,7 +1453,7 @@ st.sidebar.download_button(
     mime="application/pdf",
     use_container_width=True,
 )
-st.sidebar.caption("PDF com grades heurística, StatsBomb e mapa de diferença.")
+st.sidebar.caption("PDF: 3 grades (H / SB / DB) + 3 mapas de diferença normalizada.")
 
 # ── MAIN LAYOUT ────────────────────────────────────────────────
 st.markdown("## Passes — Comparação de Jogadores")
