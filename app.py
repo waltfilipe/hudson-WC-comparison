@@ -79,6 +79,9 @@ NORM_TOP10 = Normalize(vmin=0.05, vmax=0.40)
 NX_XT, NY_XT = 16, 12
 D_REF, D_SCALE, BONUS_CAP = 10.0, 20.0, 0.60
 LATERAL_MIN_DIST = 12.0
+WYSCOUT_PROG_OWN_HALF = 30.0
+WYSCOUT_PROG_CROSS_HALF = 15.0
+WYSCOUT_PROG_OPP_HALF = 10.0
 
 HUDSON_DOCX = "Passes - Hudson Cicala.docx"
 WORLD_CUP_DOCX = "Passes World Cup.docx"
@@ -205,13 +208,21 @@ def distance_to_goal(x, y):
 
 
 def is_progressive_pass(x_start, y_start, x_end, y_end):
-    if x_start < 35:
-        return False
+    """Wyscout progressive pass: distance-to-goal reduction by pitch zone."""
     start_dist = distance_to_goal(x_start, y_start)
     end_dist = distance_to_goal(x_end, y_end)
-    if start_dist == 0:
+    progress = start_dist - end_dist
+    if progress <= 0:
         return False
-    return ((start_dist - end_dist) / start_dist) >= 0.25
+    start_own = x_start < HALF_LINE_X
+    end_own = x_end < HALF_LINE_X
+    start_opp = x_start >= HALF_LINE_X
+    end_opp = x_end >= HALF_LINE_X
+    if start_own and end_own:
+        return progress >= WYSCOUT_PROG_OWN_HALF
+    if start_opp and end_opp:
+        return progress >= WYSCOUT_PROG_OPP_HALF
+    return progress >= WYSCOUT_PROG_CROSS_HALF
 
 
 def classify_pass_direction(x_start, y_start, x_end, y_end):
@@ -329,7 +340,7 @@ def parse_hudson_docx(raw_text: str) -> dict:
 
 
 def reverse_attack_direction_coords(x1: float, y1: float, x2: float, y2: float) -> tuple[float, float, float, float]:
-    """Flip attack direction while keeping the same flank (mirror X only)."""
+    """Convert right-to-left attack data to left-to-right (mirror X, keep flank)."""
     return FIELD_X - x1, y1, FIELD_X - x2, y2
 
 
@@ -915,7 +926,6 @@ def render_player_maps(df: pd.DataFrame):
 
 
 def render_player_cards(stats: dict, tone: str):
-    progressive_total = stats["progressive_successful"] + stats["to_final_third_success"]
     stats_section_card(
         "Overview",
         tone,
@@ -928,8 +938,8 @@ def render_player_cards(stats: dict, tone: str):
         "Progressive",
         tone,
         [
-            ("Progressive Passes", f"{progressive_total:.0f}"),
-            ("% Progressive Accuracy", f"{stats['advanced_accuracy_pct']:.1f}%"),
+            ("Progressive Passes", f"{stats['progressive_successful']:.0f}"),
+            ("% Progressive Accuracy", f"{stats['progressive_accuracy_pct']:.1f}%"),
         ],
     )
     stats_section_card(
