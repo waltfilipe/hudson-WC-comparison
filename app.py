@@ -8,7 +8,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from mplsoccer import Pitch
+from mplsoccer import Pitch, Sbopen
 import pandas as pd
 import numpy as np
 from PIL import Image
@@ -76,10 +76,18 @@ PLAYER_TONES = {
     "Bouaddi": "#d4a843",
 }
 CMAP_TOP10 = LinearSegmentedColormap.from_list("top10", ["#fef08a", "#f97316", "#b91c1c"])
-NORM_TOP10 = Normalize(vmin=0.05, vmax=0.40)
 NX_XT, NY_XT = 16, 12
-D_REF, D_SCALE, BONUS_CAP = 10.0, 20.0, 0.60
 LATERAL_MIN_DIST = 12.0
+XT_MODEL_HEURISTIC = "heuristic"
+XT_MODEL_STATSBOMB = "statsbomb"
+XT_MODEL_LABELS = {
+    XT_MODEL_HEURISTIC: "Heurístico",
+    XT_MODEL_STATSBOMB: "StatsBomb (Karun Singh)",
+}
+XT_MODEL_DESCRIPTIONS = {
+    XT_MODEL_HEURISTIC: "Grade sintética normalizada (0–1) por proximidade ao gol.",
+    XT_MODEL_STATSBOMB: "Markov chain — FA WSL 2019/20, probabilidade de gol por célula.",
+}
 WYSCOUT_PROG_OWN_HALF = 30.0
 WYSCOUT_PROG_CROSS_HALF = 15.0
 WYSCOUT_PROG_OPP_HALF = 10.0
@@ -333,13 +341,8 @@ def classify_pass_direction(x_start, y_start, x_end, y_end):
     return "forward" if dx >= 0 else "backward"
 
 
-def distance_bonus(distance):
-    excess = np.maximum(0.0, np.asarray(distance, dtype=float) - D_REF)
-    return np.minimum(BONUS_CAP, np.log1p(excess / D_SCALE))
-
-
 @st.cache_data(show_spinner=False)
-def compute_xt_grid(NX=16, NY=12, sub=24):
+def compute_heuristic_xt_grid(NX=16, NY=12, sub=24):
     ncols_hr = NX * sub
     nrows_hr = NY * sub
     xe = np.linspace(0, FIELD_X, ncols_hr + 1)
@@ -361,13 +364,103 @@ def compute_xt_grid(NX=16, NY=12, sub=24):
     return XTc
 
 
-XT_GRID = compute_xt_grid()
+@st.cache_data(show_spinner=False)
+def compute_statsbomb_xt_grid():
+    """Karun Singh xT on StatsBomb open data (FA WSL 2019/20)."""
+    parser = Sbopen()
+    pitch = Pitch(line_zorder=2)
+    bins = (NX_XT, NY_XT)
+    df_match = parser.match(competition_id=37, season_id=42)
+    cols = [
+        "match_id", "id", "type_name", "x", "y", "end_x", "end_y", "outcome_name",
+    ]
+    frames = []
+    for match_id in df_match.match_id.unique():
+        event = parser.event(match_id)[0]
+        event = event.loc[event.type_name.isin(["Carry", "Shot", "Pass"]), cols].copy()
+        event["goal"] = event["outcome_name"] == "Goal"
+        event["shoot"] = event["type_name"] == "Shot"
+        event["move"] = event["type_name"] != "Shot"
+        frames.append(event)
+    event = pd.concat(frames, ignore_index=True)
+
+    shot_probability = pitch.bin_statistic(
+        event["x"], event["y"], values=event["shoot"], statistic="mean", bins=bins,
+    )
+    move_probability = pitch.bin_statistic(
+        event["x"], event["y"], values=event["move"], statistic="mean", bins=bins,
+    )
+    goal_probability = pitch.bin_statistic(
+        event.loc[event["shoot"], "x"],
+        event.loc[event["shoot"], "y"],
+        event.loc[event["shoot"], "goal"],
+        statistic="mean",
+        bins=bins,
+    )
+
+    move = event[event["move"]].copy()
+    bin_start_locations = pitch.bin_statistic(move["x"], move["y"], bins=bins)
+    move = move[bin_start_locations["inside"]].copy()
+    bin_end_locations = pitch.bin_statistic(move["end_x"], move["end_y"], bins=bins)
+    move_success = move[(bin_end_locations["inside"]) & (move["outcome_name"].isnull())].copy()
+
+    bin_success_start = pitch.bin_statistic(move_success["x"], move_success["y"], bins=bins)
+    bin_success_end = pitch.bin_statistic(move_success["end_x"], move_success["end_y"], bins=bins)
+    df_bin = pd.DataFrame({
+        "x": bin_success_start["binnumber"][0],
+        "y": bin_success_start["binnumber"][1],
+        "end_x": bin_success_end["binnumber"][0],
+        "end_y": bin_success_end["binnumber"][1],
+    })
+    bin_counts = df_bin.value_counts().reset_index(name="bin_counts")
+
+    num_y, num_x = shot_probability["statistic"].shape
+    move_transition_matrix = np.zeros((num_y, num_x, num_y, num_x))
+    move_transition_matrix[
+        bin_counts["y"], bin_counts["x"], bin_counts["end_y"], bin_counts["end_x"]
+    ] = bin_counts.bin_counts.values
+
+    bin_start_stat = pitch.bin_statistic(move["x"], move["y"], bins=bins)
+    bin_start_stat = np.expand_dims(bin_start_stat["statistic"], (2, 3))
+    move_transition_matrix = np.divide(
+        move_transition_matrix,
+        bin_start_stat,
+        out=np.zeros_like(move_transition_matrix),
+        where=bin_start_stat != 0,
+    )
+
+    move_transition_matrix = np.nan_to_num(move_transition_matrix)
+    shot_probability_matrix = np.nan_to_num(shot_probability["statistic"])
+    move_probability_matrix = np.nan_to_num(move_probability["statistic"])
+    goal_probability_matrix = np.nan_to_num(goal_probability["statistic"])
+
+    xt = np.multiply(shot_probability_matrix, goal_probability_matrix)
+    while np.any(np.abs(xt - (xt_copy := xt.copy())) > 0.00001):
+        xt = np.multiply(shot_probability_matrix, goal_probability_matrix) + np.multiply(
+            move_probability_matrix,
+            np.multiply(move_transition_matrix, np.expand_dims(xt, axis=(0, 1))).sum(axis=(2, 3)),
+        )
+    return xt
 
 
-def xt_value(x, y):
+def get_xt_grid(xt_model: str) -> np.ndarray:
+    if xt_model == XT_MODEL_STATSBOMB:
+        return compute_statsbomb_xt_grid()
+    return compute_heuristic_xt_grid()
+
+
+def xt_value_from_grid(x: float, y: float, grid: np.ndarray) -> float:
     ix = int(np.clip((x / FIELD_X) * NX_XT, 0, NX_XT - 1))
     iy = int(np.clip((y / FIELD_Y) * NY_XT, 0, NY_XT - 1))
-    return float(XT_GRID[iy, ix])
+    return float(grid[iy, ix])
+
+
+def apply_xt_grid(df: pd.DataFrame, grid: np.ndarray) -> pd.DataFrame:
+    out = df.copy()
+    out["xt_start"] = out.apply(lambda r: xt_value_from_grid(r["x_start"], r["y_start"], grid), axis=1)
+    out["xt_end"] = out.apply(lambda r: xt_value_from_grid(r["x_end"], r["y_end"], grid), axis=1)
+    out["delta_xt"] = np.where(out["is_won"], out["xt_end"] - out["xt_start"], 0.0)
+    return out
 
 
 def apply_date_mapping(name: str) -> str:
@@ -570,12 +663,15 @@ def events_to_dataframe(events: list, match_name: str) -> pd.DataFrame:
     dfm["is_backward"] = dfm["direction"] == "backward"
     dfm["is_lateral"] = dfm["direction"].isin(["lateral_left", "lateral_right"])
     dfm["pass_distance"] = np.sqrt((dfm["x_end"] - dfm["x_start"]) ** 2 + (dfm["y_end"] - dfm["y_start"]) ** 2)
-    dfm["xt_start"] = dfm.apply(lambda r: xt_value(r["x_start"], r["y_start"]), axis=1)
-    dfm["xt_end"] = dfm.apply(lambda r: xt_value(r["x_end"], r["y_end"]), axis=1)
-    dfm["delta_xt"] = np.where(dfm["is_won"], dfm["xt_end"] - dfm["xt_start"], 0.0)
-    dfm["dist_bonus"] = distance_bonus(dfm["pass_distance"].values)
-    dfm["delta_xt_adj"] = np.where(dfm["is_won"], dfm["delta_xt"] * (1.0 + dfm["dist_bonus"]), 0.0)
+    dfm["xt_start"] = 0.0
+    dfm["xt_end"] = 0.0
+    dfm["delta_xt"] = 0.0
     return dfm
+
+
+def prepare_player_df(df: pd.DataFrame, xt_model: str, prog_model: str) -> pd.DataFrame:
+    grid = get_xt_grid(xt_model)
+    return apply_progressive_model(apply_xt_grid(df, grid), prog_model)
 
 
 def load_all_pass_data() -> tuple[dict, dict]:
@@ -670,11 +766,12 @@ def compute_stats(df: pd.DataFrame, match_name: str, prog_model: str = PROG_MODE
     fwd = int(df["is_forward"].sum())
     bwd = int(df["is_backward"].sum())
     lat = int(df["is_lateral"].sum())
-    pos_count = int((df["is_won"] & (df["delta_xt_adj"] > 0)).sum())
+    pos_count = int((df["is_won"] & (df["delta_xt"] > 0)).sum())
     pos_pct = (pos_count / total * 100.0) if total > 0 else 0.0
-    high_xt = int((df["delta_xt_adj"] > 0.1).sum())
-    sum_dxt = float(df.loc[df["is_won"], "delta_xt_adj"].sum())
-    neg_xt = float(df.loc[df["is_won"] & (df["delta_xt_adj"] < 0), "delta_xt_adj"].sum())
+    high_xt_thresh = 0.1 if df["delta_xt"].abs().max() > 0.05 else 0.02
+    high_xt = int((df["delta_xt"] > high_xt_thresh).sum())
+    sum_dxt = float(df.loc[df["is_won"], "delta_xt"].sum())
+    neg_xt = float(df.loc[df["is_won"] & (df["delta_xt"] < 0), "delta_xt"].sum())
     advanced_successful = progressive_total + to_final_third_success
     advanced_attempted = progressive_attempted + to_final_third_total
     advanced_accuracy_pct = (advanced_successful / advanced_attempted * 100.0) if advanced_attempted else 0.0
@@ -948,17 +1045,19 @@ def _draw_comet_arrow(ax, x0, y0, x1, y1, color):
 def draw_top_xt_map(df, top_n=5):
     fig, ax, pitch = _base_pitch()
     top_passes = (
-        df[(df["is_won"]) & (df["delta_xt_adj"] > 0)]
-        .sort_values("delta_xt_adj", ascending=False)
+        df[(df["is_won"]) & (df["delta_xt"] > 0)]
+        .sort_values("delta_xt", ascending=False)
         .head(top_n)
         .copy()
         .reset_index(drop=True)
     )
     cursor_points = []
     if not top_passes.empty:
+        vmax = max(float(top_passes["delta_xt"].max()), 0.01)
+        norm = Normalize(vmin=0.0, vmax=vmax)
         for _, row in top_passes.iterrows():
-            val = float(row["delta_xt_adj"])
-            color = CMAP_TOP10(NORM_TOP10(np.clip(val, 0.05, 0.40)))
+            val = float(row["delta_xt"])
+            color = CMAP_TOP10(norm(np.clip(val / vmax, 0.05, 1.0)))
             _draw_comet_arrow(
                 ax,
                 float(row["x_start"]),
@@ -989,13 +1088,176 @@ def draw_top_xt_map(df, top_n=5):
             sel.annotation.get_bbox_patch().set(fc="#1a1a2e", ec="#5b9bd5", alpha=0.95)
             sel.annotation.arrow_patch.set(connectionstyle="arc3,rad=0.2", fc="#1a1a2e", ec="#5b9bd5")
 
-    sm = plt.cm.ScalarMappable(cmap=CMAP_TOP10, norm=NORM_TOP10)
+    sm = plt.cm.ScalarMappable(
+        cmap=CMAP_TOP10,
+        norm=Normalize(
+            vmin=0.0,
+            vmax=max(float(top_passes["delta_xt"].max()), 0.01) if not top_passes.empty else 0.1,
+        ),
+    )
     cbar = fig.colorbar(sm, ax=ax, fraction=0.020, pad=0.02, shrink=0.60)
     cbar.set_label("Pass Impact", color="#ffffff", fontsize=8)
     cbar.ax.yaxis.set_tick_params(color="#ffffff", labelsize=7)
     plt.setp(plt.getp(cbar.ax.axes, "yticklabels"), color="#ffffff")
     _attack_arrow(fig, has_cbar=True)
     return _save_fig(fig), fig
+
+
+def _normalize_grid(grid: np.ndarray) -> np.ndarray:
+    g = grid.astype(float)
+    return (g - g.min()) / (g.max() - g.min() + 1e-12)
+
+
+def draw_xt_grid_map(grid: np.ndarray, title: str, value_fmt: str = ".2f", as_percent: bool = False):
+    fig, ax, pitch = _base_pitch()
+    x_bins = np.linspace(0, FIELD_X, NX_XT + 1)
+    y_bins = np.linspace(0, FIELD_Y, NY_XT + 1)
+    vmax = max(float(grid.max()), 1e-6)
+    cmap = LinearSegmentedColormap.from_list("xt", ["#1a1a2e", "#3b82f6", "#fbbf24", "#ef4444"])
+    norm = Normalize(vmin=0, vmax=vmax)
+    threshold = vmax * 0.45
+    for iy in range(NY_XT):
+        for ix in range(NX_XT):
+            value = float(grid[iy, ix])
+            x0, x1 = x_bins[ix], x_bins[ix + 1]
+            y0, y1 = y_bins[iy], y_bins[iy + 1]
+            ax.add_patch(
+                Rectangle(
+                    (x0, y0), x1 - x0, y1 - y0,
+                    facecolor=cmap(norm(value)),
+                    edgecolor=(1, 1, 1, 0.15),
+                    lw=0.4,
+                    alpha=0.95,
+                    zorder=2,
+                )
+            )
+            label = f"{value * 100:.1f}%" if as_percent else f"{value:{value_fmt}}"
+            ax.text(
+                (x0 + x1) / 2, (y0 + y1) / 2, label,
+                ha="center", va="center",
+                color="#000000" if value <= threshold else "#ffffff",
+                fontsize=5.5, fontweight="600", zorder=4,
+            )
+    ax.set_title(title, color="#eef1f7", fontsize=10, pad=8)
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    cbar = fig.colorbar(sm, ax=ax, fraction=0.020, pad=0.02, shrink=0.55)
+    cbar.ax.yaxis.set_tick_params(color="#ffffff", labelsize=6)
+    plt.setp(plt.getp(cbar.ax.axes, "yticklabels"), color="#ffffff")
+    _attack_arrow(fig, has_cbar=True)
+    return _save_fig(fig), fig
+
+
+def draw_xt_diff_map(heuristic_grid: np.ndarray, sb_grid: np.ndarray):
+    """Heatmap of cell-wise difference (heuristic normalized − StatsBomb normalized)."""
+    diff = _normalize_grid(heuristic_grid) - _normalize_grid(sb_grid)
+    fig, ax, pitch = _base_pitch()
+    x_bins = np.linspace(0, FIELD_X, NX_XT + 1)
+    y_bins = np.linspace(0, FIELD_Y, NY_XT + 1)
+    vmax = max(float(np.abs(diff).max()), 0.05)
+    cmap = LinearSegmentedColormap.from_list(
+        "diff", ["#2563eb", "#1a1a2e", "#1a1a2e", "#ef4444"],
+    )
+    norm = Normalize(vmin=-vmax, vmax=vmax)
+    for iy in range(NY_XT):
+        for ix in range(NX_XT):
+            value = float(diff[iy, ix])
+            x0, x1 = x_bins[ix], x_bins[ix + 1]
+            y0, y1 = y_bins[iy], y_bins[iy + 1]
+            ax.add_patch(
+                Rectangle(
+                    (x0, y0), x1 - x0, y1 - y0,
+                    facecolor=cmap(norm(value)),
+                    edgecolor=(1, 1, 1, 0.12),
+                    lw=0.4,
+                    alpha=0.95,
+                    zorder=2,
+                )
+            )
+            ax.text(
+                (x0 + x1) / 2, (y0 + y1) / 2, f"{value:+.2f}",
+                ha="center", va="center",
+                color="#ffffff" if abs(value) > vmax * 0.35 else "#c7cdda",
+                fontsize=5.5, fontweight="600", zorder=4,
+            )
+    ax.set_title(
+        "Diferença de xT (Heurístico − StatsBomb, ambos normalizados 0–1)",
+        color="#eef1f7", fontsize=9, pad=8,
+    )
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    cbar = fig.colorbar(sm, ax=ax, fraction=0.020, pad=0.02, shrink=0.55)
+    cbar.set_label("Δ normalizado", color="#ffffff", fontsize=7)
+    cbar.ax.yaxis.set_tick_params(color="#ffffff", labelsize=6)
+    plt.setp(plt.getp(cbar.ax.axes, "yticklabels"), color="#ffffff")
+    _attack_arrow(fig, has_cbar=True)
+    return _save_fig(fig), fig
+
+
+def build_xt_comparison_pdf() -> bytes:
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    h_grid = compute_heuristic_xt_grid()
+    sb_grid = compute_statsbomb_xt_grid()
+
+    img_h, fig_h = draw_xt_grid_map(h_grid, "xT Heurístico (0–1)", value_fmt=".2f")
+    plt.close(fig_h)
+    img_sb, fig_sb = draw_xt_grid_map(sb_grid, "xT StatsBomb — prob. gol", value_fmt=".3f")
+    plt.close(fig_sb)
+    img_diff, fig_diff = draw_xt_diff_map(h_grid, sb_grid)
+    plt.close(fig_diff)
+
+    buf = BytesIO()
+    page_w, page_h = landscape(A4)
+    c = canvas.Canvas(buf, pagesize=landscape(A4))
+    c.setFillColorRGB(0.1, 0.1, 0.16)
+    c.rect(0, 0, page_w, page_h, fill=1, stroke=0)
+    c.setFillColorRGB(0.93, 0.95, 0.97)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(36, page_h - 36, "Comparativo de Modelos xT — Grade 16×12")
+    c.setFont("Helvetica", 9)
+    c.setFillColorRGB(0.58, 0.64, 0.72)
+    c.drawString(
+        36, page_h - 52,
+        "Heurístico (app) vs StatsBomb Karun Singh (FA WSL 2019/20) | Vermelho = heurístico maior",
+    )
+
+    panel_w = (page_w - 72 - 24) / 3
+    panel_h = page_h - 90
+    y0 = 28
+    for idx, (img, label) in enumerate([
+        (img_h, "Heurístico"),
+        (img_sb, "StatsBomb"),
+        (img_diff, "Diferença"),
+    ]):
+        x0 = 36 + idx * (panel_w + 12)
+        c.setFillColorRGB(0.93, 0.95, 0.97)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(x0, page_h - 72, label)
+        img_buf = BytesIO()
+        img.save(img_buf, format="PNG")
+        img_buf.seek(0)
+        aspect = img.width / img.height
+        draw_h = panel_h
+        draw_w = draw_h * aspect
+        if draw_w > panel_w:
+            draw_w = panel_w
+            draw_h = draw_w / aspect
+        c.drawImage(
+            ImageReader(img_buf), x0, y0,
+            width=draw_w, height=draw_h,
+            preserveAspectRatio=True, anchor="sw",
+        )
+
+    c.showPage()
+    c.save()
+    buf.seek(0)
+    return buf.getvalue()
+
+
+@st.cache_data(show_spinner="Gerando PDF comparativo xT…")
+def get_xt_comparison_pdf_bytes() -> bytes:
+    return build_xt_comparison_pdf()
 
 
 def render_player_maps(df: pd.DataFrame, prog_model: str):
@@ -1083,6 +1345,17 @@ st.sidebar.markdown(
 )
 
 st.sidebar.markdown("---")
+st.sidebar.markdown("**Modelo de xT**")
+xt_model = st.sidebar.radio(
+    "Modelo de xT",
+    options=list(XT_MODEL_LABELS.keys()),
+    format_func=lambda k: XT_MODEL_LABELS[k],
+    key="xt_model_selector",
+    label_visibility="collapsed",
+)
+st.sidebar.caption(XT_MODEL_DESCRIPTIONS[xt_model])
+
+st.sidebar.markdown("---")
 st.sidebar.markdown("**Critério de Progressive Pass**")
 prog_model = st.sidebar.radio(
     "Modelo de avaliação",
@@ -1092,6 +1365,17 @@ prog_model = st.sidebar.radio(
     label_visibility="collapsed",
 )
 st.sidebar.caption(PROG_MODEL_DESCRIPTIONS[prog_model])
+
+st.sidebar.markdown("---")
+pdf_bytes = get_xt_comparison_pdf_bytes()
+st.sidebar.download_button(
+    label="Exportar PDF — Mapas xT",
+    data=pdf_bytes,
+    file_name="comparativo_xt_mapas.pdf",
+    mime="application/pdf",
+    use_container_width=True,
+)
+st.sidebar.caption("PDF com grades heurística, StatsBomb e mapa de diferença.")
 
 # ── MAIN LAYOUT ────────────────────────────────────────────────
 st.markdown("## Passes — Comparação de Jogadores")
@@ -1104,9 +1388,9 @@ selected_hudson_match = st.selectbox(
     key="hudson_match_selector",
 )
 
-hudson_df = apply_progressive_model(hudson_dfs[selected_hudson_match], prog_model)
-bentancur_df = apply_progressive_model(wc_dfs[BENTANCUR_KEY], prog_model)
-bouaddi_df = apply_progressive_model(wc_dfs[BOUADDI_KEY], prog_model)
+hudson_df = prepare_player_df(hudson_dfs[selected_hudson_match], xt_model, prog_model)
+bentancur_df = prepare_player_df(wc_dfs[BENTANCUR_KEY], xt_model, prog_model)
+bouaddi_df = prepare_player_df(wc_dfs[BOUADDI_KEY], xt_model, prog_model)
 
 hudson_stats = compute_stats(hudson_df, selected_hudson_match, prog_model)
 bentancur_stats = compute_stats(bentancur_df, BENTANCUR_KEY, prog_model)
@@ -1137,7 +1421,9 @@ players = [
 ]
 
 st.markdown("---")
-st.markdown(f"### Mapas de Passe — {PROG_MODEL_LABELS[prog_model]}")
+st.markdown(
+    f"### Mapas de Passe — {PROG_MODEL_LABELS[prog_model]} · xT: {XT_MODEL_LABELS[xt_model]}"
+)
 
 map_cols = st.columns(3)
 for col, player in zip(map_cols, players):
@@ -1147,7 +1433,9 @@ for col, player in zip(map_cols, players):
         render_player_maps(player["df"], prog_model)
 
 st.markdown("---")
-st.markdown(f"### Estatísticas do jogo — {PROG_MODEL_LABELS[prog_model]}")
+st.markdown(
+    f"### Estatísticas do jogo — {PROG_MODEL_LABELS[prog_model]} · xT: {XT_MODEL_LABELS[xt_model]}"
+)
 
 stat_cols = st.columns(3)
 for col, player in zip(stat_cols, players):
