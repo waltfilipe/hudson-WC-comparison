@@ -83,15 +83,18 @@ DATABALLPY_PITCH_LENGTH = 106.0
 DATABALLPY_PITCH_WIDTH = 68.0
 LATERAL_MIN_DIST = 12.0
 XT_MODEL_HEURISTIC = "heuristic"
+XT_MODEL_HEURISTIC_V2 = "heuristic_v2"
 XT_MODEL_STATSBOMB = "statsbomb"
 XT_MODEL_DATABALLPY = "databallpy"
 XT_MODEL_LABELS = {
-    XT_MODEL_HEURISTIC: "Heurístico",
+    XT_MODEL_HEURISTIC: "Heurístico (v1)",
+    XT_MODEL_HEURISTIC_V2: "Heurístico v2 (construção)",
     XT_MODEL_STATSBOMB: "StatsBomb (Karun Singh)",
     XT_MODEL_DATABALLPY: "DataBallPy (open play)",
 }
 XT_MODEL_DESCRIPTIONS = {
     XT_MODEL_HEURISTIC: "Grade sintética normalizada (0–1) por proximidade ao gol.",
+    XT_MODEL_HEURISTIC_V2: "Zonas por terço + interpolação + reciclagem e ΔxT mínimo.",
     XT_MODEL_STATSBOMB: "Markov chain — FA WSL 2019/20, probabilidade de gol por célula.",
     XT_MODEL_DATABALLPY: "Modelo pré-treinado open play (264×196), coords convertidas de StatsBomb.",
 }
@@ -105,6 +108,13 @@ XT_PROGRESS_DEFENSIVE_PCT = 0.20
 XT_HIGH_PCT = 0.30
 XT_MIN_PASS_DISTANCE = 9.5
 XT_EPS = 1e-9
+XT_V2_MIN_ABS_DELTA = 0.008
+XT_V2_NEG_PENALTY_FACTOR = 0.55
+XT_V2_PRESSURE_ESCAPE_BONUS = 0.005
+XT_V2_PRESSURE_X_MAX = 50.0
+XT_V2_WIDE_FRAC = 0.60
+XT_V2_FINE_NX = 96
+XT_V2_FINE_NY = 64
 
 PROG_MODEL_WYSCOUT = "wyscout"
 PROG_MODEL_OPTA = "opta"
@@ -300,19 +310,64 @@ def classify_xt_progressive(
     return "progressive"
 
 
+def classify_xt_progressive_v2(
+    xt_start: float,
+    xt_end: float,
+    x_end: float,
+    pass_distance: float,
+) -> str:
+    """v2: exige ΔxT absoluto mínimo além do aumento percentual."""
+    if pass_distance <= XT_MIN_PASS_DISTANCE:
+        return "none"
+    delta_abs = xt_end - xt_start
+    if delta_abs < XT_V2_MIN_ABS_DELTA:
+        return "none"
+    pct = xt_relative_increase(xt_start, xt_end)
+    min_pct = XT_PROGRESS_DEFENSIVE_PCT if x_end < HALF_LINE_X else XT_PROGRESS_ATTACKING_PCT
+    if pct < min_pct:
+        return "none"
+    if pct == float("inf") or pct > XT_HIGH_PCT:
+        return "highly"
+    return "progressive"
+
+
+def classify_xt_progressive_for_model(
+    xt_start: float,
+    xt_end: float,
+    x_end: float,
+    pass_distance: float,
+    xt_model: str,
+) -> str:
+    if xt_model == XT_MODEL_HEURISTIC_V2:
+        return classify_xt_progressive_v2(xt_start, xt_end, x_end, pass_distance)
+    return classify_xt_progressive(xt_start, xt_end, x_end, pass_distance)
+
+
 def is_progressive_xt_attempt(xt_start: float, xt_end: float, x_end: float, pass_distance: float) -> bool:
     return classify_xt_progressive(xt_start, xt_end, x_end, pass_distance) in ("progressive", "highly")
 
 
-def is_progressive_attempt(row, model: str) -> bool:
+def is_progressive_xt_attempt_for_model(
+    xt_start: float, xt_end: float, x_end: float, pass_distance: float, xt_model: str,
+) -> bool:
+    return classify_xt_progressive_for_model(
+        xt_start, xt_end, x_end, pass_distance, xt_model,
+    ) in ("progressive", "highly")
+
+
+def is_progressive_attempt(row, model: str, xt_model: str = XT_MODEL_HEURISTIC) -> bool:
     if model == PROG_MODEL_WYSCOUT:
         return is_progressive_wyscout(row.x_start, row.y_start, row.x_end, row.y_end)
     if model == PROG_MODEL_OPTA:
         return is_progressive_opta(row.x_start, row.y_start, row.x_end, row.y_end)
-    return is_progressive_xt_attempt(row.xt_start, row.xt_end, row.x_end, row.pass_distance)
+    return is_progressive_xt_attempt_for_model(
+        row.xt_start, row.xt_end, row.x_end, row.pass_distance, xt_model,
+    )
 
 
-def apply_progressive_model(df: pd.DataFrame, model: str) -> pd.DataFrame:
+def apply_progressive_model(
+    df: pd.DataFrame, model: str, xt_model: str = XT_MODEL_HEURISTIC,
+) -> pd.DataFrame:
     df = df.copy()
     progressive_flags = []
     highly_flags = []
@@ -324,7 +379,9 @@ def apply_progressive_model(df: pd.DataFrame, model: str) -> pd.DataFrame:
             attempt = is_progressive_opta(row.x_start, row.y_start, row.x_end, row.y_end)
             highly = False
         else:
-            xt_cat = classify_xt_progressive(row.xt_start, row.xt_end, row.x_end, row.pass_distance)
+            xt_cat = classify_xt_progressive_for_model(
+                row.xt_start, row.xt_end, row.x_end, row.pass_distance, xt_model,
+            )
             attempt = xt_cat in ("progressive", "highly")
             highly = xt_cat == "highly"
         progressive_flags.append(row.is_won and attempt)
@@ -369,6 +426,101 @@ def compute_heuristic_xt_grid(NX=16, NY=12, sub=24):
             XTc[iy, ix] = XT[iy * sub:(iy + 1) * sub, ix * sub:(ix + 1) * sub].mean()
     XTc = (XTc - XTc.min()) / (XTc.max() - XTc.min() + 1e-12)
     return XTc
+
+
+def _zone_x_threat(x: np.ndarray) -> np.ndarray:
+    """Idea 3: piecewise threat by pitch third (favours build-up in midfield)."""
+    x = np.clip(x, 0.0, FIELD_X)
+    threat = np.zeros_like(x, dtype=float)
+    def_mask = x < OPT_ATTACKING_TWO_THIRDS_X
+    mid_mask = (x >= OPT_ATTACKING_TWO_THIRDS_X) & (x < FINAL_THIRD_LINE_X)
+    att_mask = x >= FINAL_THIRD_LINE_X
+    threat[def_mask] = 0.12 * (x[def_mask] / OPT_ATTACKING_TWO_THIRDS_X)
+    threat[mid_mask] = 0.12 + 0.38 * (
+        (x[mid_mask] - OPT_ATTACKING_TWO_THIRDS_X) / (FINAL_THIRD_LINE_X - OPT_ATTACKING_TWO_THIRDS_X)
+    )
+    threat[att_mask] = 0.50 + 0.50 * (
+        (x[att_mask] - FINAL_THIRD_LINE_X) / (FIELD_X - FINAL_THIRD_LINE_X)
+    )
+    return threat
+
+
+def _centrality(y: np.ndarray) -> np.ndarray:
+    return 1.0 - np.abs((y / FIELD_Y) - 0.5) * 2.0
+
+
+def _lateral_frac(y: float) -> float:
+    return float(abs(y - GOAL_Y) / (FIELD_Y / 2.0))
+
+
+@st.cache_data(show_spinner=False)
+def compute_heuristic_v2_fine_grid(nx: int = XT_V2_FINE_NX, ny: int = XT_V2_FINE_NY) -> np.ndarray:
+    """Idea 2: high-resolution grid for bilinear lookup."""
+    xe = np.linspace(0.0, FIELD_X, nx)
+    ye = np.linspace(0.0, FIELD_Y, ny)
+    Xc, Yc = np.meshgrid(xe, ye)
+    base = _zone_x_threat(Xc) * (0.72 + 0.28 * _centrality(Yc))
+    return (base - base.min()) / (base.max() - base.min() + 1e-12)
+
+
+def xt_value_bilinear(x: float, y: float, fine_grid: np.ndarray) -> float:
+    nx, ny = fine_grid.shape[1], fine_grid.shape[0]
+    fx = float(np.clip(x / FIELD_X * (nx - 1), 0.0, nx - 1))
+    fy = float(np.clip(y / FIELD_Y * (ny - 1), 0.0, ny - 1))
+    x0, y0 = int(fx), int(fy)
+    x1, y1 = min(x0 + 1, nx - 1), min(y0 + 1, ny - 1)
+    tx, ty = fx - x0, fy - y0
+    v00, v10 = fine_grid[y0, x0], fine_grid[y0, x1]
+    v01, v11 = fine_grid[y1, x0], fine_grid[y1, x1]
+    return float(
+        (1 - tx) * (1 - ty) * v00
+        + tx * (1 - ty) * v10
+        + (1 - tx) * ty * v01
+        + tx * ty * v11
+    )
+
+
+@st.cache_data(show_spinner=False)
+def compute_heuristic_v2_xt_grid() -> np.ndarray:
+    """16×12 display grid sampled via bilinear interpolation."""
+    fine = compute_heuristic_v2_fine_grid()
+    grid = np.zeros((NY_XT, NX_XT))
+    x_bins = np.linspace(0, FIELD_X, NX_XT + 1)
+    y_bins = np.linspace(0, FIELD_Y, NY_XT + 1)
+    for iy in range(NY_XT):
+        for ix in range(NX_XT):
+            cx = (x_bins[ix] + x_bins[ix + 1]) / 2.0
+            cy = (y_bins[iy] + y_bins[iy + 1]) / 2.0
+            grid[iy, ix] = xt_value_bilinear(cx, cy, fine)
+    return grid
+
+
+def _adjust_heuristic_v2_pass_delta(row) -> float:
+    """Idea 5: softer penalty on useful recycle / pressure escape."""
+    if not row.is_won:
+        return 0.0
+    raw = float(row.xt_end - row.xt_start)
+    if raw >= 0:
+        return raw
+    lat_start = _lateral_frac(row.y_start)
+    lat_end = _lateral_frac(row.y_end)
+    adjusted = raw * (XT_V2_NEG_PENALTY_FACTOR if lat_end < lat_start else 1.0)
+    if (
+        row.x_start < XT_V2_PRESSURE_X_MAX
+        and lat_start > XT_V2_WIDE_FRAC
+        and lat_end < lat_start - 0.12
+    ):
+        adjusted += XT_V2_PRESSURE_ESCAPE_BONUS
+    return adjusted
+
+
+def apply_heuristic_v2_xt(df: pd.DataFrame) -> pd.DataFrame:
+    fine = compute_heuristic_v2_fine_grid()
+    out = df.copy()
+    out["xt_start"] = out.apply(lambda r: xt_value_bilinear(r["x_start"], r["y_start"], fine), axis=1)
+    out["xt_end"] = out.apply(lambda r: xt_value_bilinear(r["x_end"], r["y_end"], fine), axis=1)
+    out["delta_xt"] = out.apply(_adjust_heuristic_v2_pass_delta, axis=1)
+    return out
 
 
 @st.cache_data(show_spinner=False)
@@ -481,10 +633,14 @@ def get_xt_grid(xt_model: str) -> np.ndarray:
         return compute_statsbomb_xt_grid()
     if xt_model == XT_MODEL_DATABALLPY:
         return compute_databallpy_xt_grid()
+    if xt_model == XT_MODEL_HEURISTIC_V2:
+        return compute_heuristic_v2_xt_grid()
     return compute_heuristic_xt_grid()
 
 
 def apply_xt_model(df: pd.DataFrame, xt_model: str) -> pd.DataFrame:
+    if xt_model == XT_MODEL_HEURISTIC_V2:
+        return apply_heuristic_v2_xt(df)
     if xt_model == XT_MODEL_DATABALLPY:
         out = df.copy()
         out["xt_start"] = out.apply(lambda r: databallpy_xt_value(r["x_start"], r["y_start"]), axis=1)
@@ -715,7 +871,7 @@ def events_to_dataframe(events: list, match_name: str) -> pd.DataFrame:
 
 
 def prepare_player_df(df: pd.DataFrame, xt_model: str, prog_model: str) -> pd.DataFrame:
-    return apply_progressive_model(apply_xt_model(df, xt_model), prog_model)
+    return apply_progressive_model(apply_xt_model(df, xt_model), prog_model, xt_model)
 
 
 def load_all_pass_data() -> tuple[dict, dict]:
@@ -741,8 +897,13 @@ def load_all_pass_data() -> tuple[dict, dict]:
     return hudson_dfs, wc_dfs
 
 
-def compute_stats(df: pd.DataFrame, match_name: str, prog_model: str = PROG_MODEL_WYSCOUT) -> dict:
-    df = apply_progressive_model(df, prog_model)
+def compute_stats(
+    df: pd.DataFrame,
+    match_name: str,
+    prog_model: str = PROG_MODEL_WYSCOUT,
+    xt_model: str = XT_MODEL_HEURISTIC,
+) -> dict:
+    df = apply_progressive_model(df, prog_model, xt_model)
     total = len(df)
     mins = get_match_minutes(match_name)
     p90_factor = 90.0 / mins if mins > 0 else 1.0
@@ -786,7 +947,9 @@ def compute_stats(df: pd.DataFrame, match_name: str, prog_model: str = PROG_MODE
     accuracy = successful / total * 100.0
     progressive_total = int(df["progressive"].sum())
     highly_progressive = int(df["highly_progressive"].sum())
-    progressive_unsuccessful = int((~df["is_won"] & df.apply(lambda r: is_progressive_attempt(r, prog_model), axis=1)).sum())
+    progressive_unsuccessful = int(
+        (~df["is_won"] & df.apply(lambda r: is_progressive_attempt(r, prog_model, xt_model), axis=1)).sum()
+    )
     progressive_attempted = progressive_total + progressive_unsuccessful
     progressive_accuracy = (progressive_total / progressive_attempted * 100.0) if progressive_attempted else 0.0
     to_final_third = (df["x_start"] < FINAL_THIRD_LINE_X) & (df["x_end"] >= FINAL_THIRD_LINE_X)
@@ -1233,6 +1396,137 @@ def draw_xt_diff_map(grid_a: np.ndarray, grid_b: np.ndarray, title: str):
     return _save_fig(fig), fig
 
 
+    _attack_arrow(fig, has_cbar=True)
+    return _save_fig(fig), fig
+
+
+def draw_heuristic_v1_v2_impact_chart(player_rows: list[dict]):
+    names = [p["name"] for p in player_rows]
+    v1_vals = [p["v1_impact"] for p in player_rows]
+    v2_vals = [p["v2_impact"] for p in player_rows]
+    fig, ax = plt.subplots(figsize=(7.2, 3.8), facecolor="#1a1a2e")
+    ax.set_facecolor("#1a1a2e")
+    x = np.arange(len(names))
+    w = 0.36
+    ax.bar(x - w / 2, v1_vals, w, label="Heurístico v1", color="#5b9bd5", alpha=0.92)
+    ax.bar(x + w / 2, v2_vals, w, label="Heurístico v2", color="#70ad47", alpha=0.92)
+    ax.set_xticks(x)
+    ax.set_xticklabels(names, color="#c7cdda", fontsize=9)
+    ax.set_ylabel("Pass Impact (Σ ΔxT)", color="#c7cdda", fontsize=9)
+    ax.tick_params(colors="#94a3b8", labelsize=8)
+    ax.set_title("Pass Impact por jogador — v1 vs v2", color="#eef1f7", fontsize=11, pad=10)
+    ax.legend(facecolor="#1a1a2e", edgecolor="#444466", labelcolor="#eef1f7", fontsize=8)
+    ax.axhline(0, color="#444466", lw=0.8)
+    for spine in ax.spines.values():
+        spine.set_color("#444466")
+    fig.tight_layout()
+    return _save_fig(fig), fig
+
+
+def draw_pass_delta_scatter(df_v1: pd.DataFrame, df_v2: pd.DataFrame, title: str):
+    left = df_v1[df_v1["is_won"]][["number", "delta_xt"]].rename(columns={"delta_xt": "v1"})
+    right = df_v2[df_v2["is_won"]][["number", "delta_xt"]].rename(columns={"delta_xt": "v2"})
+    merged = left.merge(right, on="number", how="inner")
+    fig, ax = plt.subplots(figsize=(4.8, 4.5), facecolor="#1a1a2e")
+    ax.set_facecolor("#1a1a2e")
+    if not merged.empty:
+        lim = max(merged[["v1", "v2"]].abs().max().max(), 0.02)
+        ax.scatter(merged["v1"], merged["v2"], c="#d4a843", alpha=0.75, s=28, edgecolors="white", linewidths=0.4)
+        ax.plot([-lim, lim], [-lim, lim], "--", color="#64748b", lw=1.0, alpha=0.8)
+        ax.set_xlim(-lim * 1.05, lim * 1.05)
+        ax.set_ylim(-lim * 1.05, lim * 1.05)
+        corr = merged["v1"].corr(merged["v2"])
+        ax.text(0.05, 0.95, f"r = {corr:.2f}", transform=ax.transAxes, color="#eef1f7", fontsize=9, va="top")
+    ax.set_xlabel("ΔxT v1", color="#c7cdda", fontsize=9)
+    ax.set_ylabel("ΔxT v2", color="#c7cdda", fontsize=9)
+    ax.set_title(title, color="#eef1f7", fontsize=10, pad=8)
+    ax.tick_params(colors="#94a3b8", labelsize=7)
+    for spine in ax.spines.values():
+        spine.set_color("#444466")
+    fig.tight_layout()
+    return _save_fig(fig), fig
+
+
+def render_heuristic_v1_v2_comparison(
+    hudson_base: pd.DataFrame,
+    bentancur_base: pd.DataFrame,
+    bouaddi_base: pd.DataFrame,
+    prog_model: str,
+    hudson_label: str,
+):
+    grid_v1 = compute_heuristic_xt_grid()
+    grid_v2 = compute_heuristic_v2_xt_grid()
+
+    st.markdown("---")
+    st.markdown("### Comparativo gráfico — xT Heurístico v1 vs v2")
+    st.caption(
+        "v2: zonas por terço, interpolação bilinear, ΔxT mínimo para progressivo "
+        "e penalidade reduzida em reciclagem útil."
+    )
+
+    gcols = st.columns(3)
+    grid_panels = [
+        (grid_v1, "Heurístico v1"),
+        (grid_v2, "Heurístico v2"),
+        (grid_v2, "Δ v2 − v1"),
+    ]
+    for col, (grid, label) in zip(gcols, grid_panels[:2]):
+        with col:
+            img, fig = draw_xt_grid_map(grid, label, value_fmt=".2f")
+            plt.close(fig)
+            st.image(img, use_container_width=True)
+    with gcols[2]:
+        img, fig = draw_xt_diff_map(grid_v2, grid_v1, "Δ v2 − v1 (normalizados)")
+        plt.close(fig)
+        st.image(img, use_container_width=True)
+
+    bases = [
+        ("Hudson Cicala", hudson_base, hudson_label),
+        ("Bentancur", bentancur_base, "Copa — vs Arábia Saudita"),
+        ("Bouaddi", bouaddi_base, "Copa — vs Brasil"),
+    ]
+    impact_rows = []
+    for name, base_df, _ in bases:
+        df_v1 = prepare_player_df(base_df, XT_MODEL_HEURISTIC, prog_model)
+        df_v2 = prepare_player_df(base_df, XT_MODEL_HEURISTIC_V2, prog_model)
+        impact_rows.append({
+            "name": name,
+            "v1_impact": float(df_v1.loc[df_v1["is_won"], "delta_xt"].sum()),
+            "v2_impact": float(df_v2.loc[df_v2["is_won"], "delta_xt"].sum()),
+            "df_v1": df_v1,
+            "df_v2": df_v2,
+        })
+
+    chart_col, scatter_col = st.columns([1.4, 1.0])
+    with chart_col:
+        img, fig = draw_heuristic_v1_v2_impact_chart(impact_rows)
+        plt.close(fig)
+        st.image(img, use_container_width=True)
+    with scatter_col:
+        bent = next(r for r in impact_rows if r["name"] == "Bentancur")
+        img, fig = draw_pass_delta_scatter(
+            bent["df_v1"], bent["df_v2"], "Passes Bentancur — ΔxT v1 vs v2",
+        )
+        plt.close(fig)
+        st.image(img, use_container_width=True)
+
+    st.markdown("#### Resumo numérico (jogo atual)")
+    summary_rows = []
+    for row in impact_rows:
+        df_v1, df_v2 = row["df_v1"], row["df_v2"]
+        won_v1, won_v2 = df_v1[df_v1["is_won"]], df_v2[df_v2["is_won"]]
+        summary_rows.append({
+            "Jogador": row["name"],
+            "ΣΔxT v1": round(float(won_v1["delta_xt"].sum()), 3),
+            "ΣΔxT v2": round(float(won_v2["delta_xt"].sum()), 3),
+            "% Δ>0 v1": round((won_v1["delta_xt"] > 0).mean() * 100, 1),
+            "% Δ>0 v2": round((won_v2["delta_xt"] > 0).mean() * 100, 1),
+            "Prog. v1": int(df_v1["progressive"].sum()),
+            "Prog. v2": int(df_v2["progressive"].sum()),
+        })
+    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+
 def _pdf_draw_image_row(c, images_labels, page_w, page_h, y_top, row_h, margin_x=36, gap=10):
     from reportlab.lib.utils import ImageReader
 
@@ -1470,9 +1764,9 @@ hudson_df = prepare_player_df(hudson_dfs[selected_hudson_match], xt_model, prog_
 bentancur_df = prepare_player_df(wc_dfs[BENTANCUR_KEY], xt_model, prog_model)
 bouaddi_df = prepare_player_df(wc_dfs[BOUADDI_KEY], xt_model, prog_model)
 
-hudson_stats = compute_stats(hudson_df, selected_hudson_match, prog_model)
-bentancur_stats = compute_stats(bentancur_df, BENTANCUR_KEY, prog_model)
-bouaddi_stats = compute_stats(bouaddi_df, BOUADDI_KEY, prog_model)
+hudson_stats = compute_stats(hudson_df, selected_hudson_match, prog_model, xt_model)
+bentancur_stats = compute_stats(bentancur_df, BENTANCUR_KEY, prog_model, xt_model)
+bouaddi_stats = compute_stats(bouaddi_df, BOUADDI_KEY, prog_model, xt_model)
 
 players = [
     {
@@ -1521,3 +1815,11 @@ for col, player in zip(stat_cols, players):
         st.markdown(f'<div class="player-header">{player["name"]}</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="player-sub">{player["subtitle"]}</div>', unsafe_allow_html=True)
         render_player_cards(player["stats"], player["tone"], prog_model)
+
+render_heuristic_v1_v2_comparison(
+    hudson_dfs[selected_hudson_match],
+    wc_dfs[BENTANCUR_KEY],
+    wc_dfs[BOUADDI_KEY],
+    prog_model,
+    selected_hudson_match,
+)
