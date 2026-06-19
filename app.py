@@ -85,7 +85,7 @@ WORLD_CUP_DOCX = "Passes World Cup.docx"
 BENTANCUR_KEY = "Bentancur (vs Saudi Arabia)"
 BOUADDI_KEY = "Bouaddi (vs Brasil)"
 INVERTED_WC_PLAYERS = {BOUADDI_KEY}
-MIRROR_HORIZONTAL_PLAYERS = {BENTANCUR_KEY}
+REVERSE_ATTACK_PLAYERS = {BENTANCUR_KEY}
 WORLD_CUP_MINUTES = 90.0
 
 BENTANCUR_RAW_DATA = """
@@ -187,16 +187,6 @@ Seta 11: (34.45, 17.69) -> (29.29, 15.16)
 Seta 12: (34.92, 26.15) -> (19.71, 23.42)
 """
 
-SGA_RANGE_METRICS = {
-    "xt_p90": "1.7 – 2.0",
-    "pos_pct": "40% – 45%",
-}
-SGA_RANGE_LABEL = "SGA Range"
-BENCHMARK_EUR_KEY = "TOP 5 - EUR"
-BENCHMARK_POSITIONS = ("RDMF", "RCMF", "LDMF", "LCMF", "DMF")
-BENCHMARK_FILES = {"MLS": "MLS 1.xlsx", BENCHMARK_EUR_KEY: "TOP 5 - UE.xlsx"}
-BENCHMARK_MINUTES_RATIO = 0.50
-
 CARD_TITLE_TEXT = "14px"
 CARD_LABEL_TEXT = "16px"
 CARD_SUBTEXT = "13px"
@@ -289,7 +279,7 @@ def apply_date_mapping(name: str) -> str:
 
 
 def get_match_minutes(match_name: str, hudson_matches: list[str] | None = None) -> float:
-    if match_name in INVERTED_WC_PLAYERS or match_name in MIRROR_HORIZONTAL_PLAYERS:
+    if match_name in INVERTED_WC_PLAYERS or match_name in REVERSE_ATTACK_PLAYERS:
         return WORLD_CUP_MINUTES
     name_lower = match_name.lower()
     if "houston" in name_lower:
@@ -338,8 +328,8 @@ def parse_hudson_docx(raw_text: str) -> dict:
     return {k: v for k, v in matches.items() if len(v) > 0}
 
 
-def mirror_horizontal_coords(x1: float, y1: float, x2: float, y2: float) -> tuple[float, float, float, float]:
-    """Mirror X axis to convert right-to-left attack data into left-to-right."""
+def reverse_attack_direction_coords(x1: float, y1: float, x2: float, y2: float) -> tuple[float, float, float, float]:
+    """Flip attack direction while keeping the same flank (mirror X only)."""
     return FIELD_X - x1, y1, FIELD_X - x2, y2
 
 
@@ -402,8 +392,8 @@ def reconcile_failed_passes(
 
 
 def apply_player_orientation(player: str, x1: float, y1: float, x2: float, y2: float) -> tuple[float, float, float, float]:
-    if player in MIRROR_HORIZONTAL_PLAYERS:
-        return mirror_horizontal_coords(x1, y1, x2, y2)
+    if player in REVERSE_ATTACK_PLAYERS:
+        return reverse_attack_direction_coords(x1, y1, x2, y2)
     if player in INVERTED_WC_PLAYERS:
         return invert_pitch_coords(x1, y1, x2, y2)
     return x1, y1, x2, y2
@@ -633,179 +623,16 @@ def compute_stats(df: pd.DataFrame, match_name: str) -> dict:
     }
 
 
-def _lerp_channel(a: int, b: int, t: float) -> int:
-    return int(round(a + (b - a) * max(0.0, min(1.0, t))))
-
-
-def _lerp_hex(hex_a: str, hex_b: str, t: float) -> str:
-    ha, hb = hex_a.lstrip("#"), hex_b.lstrip("#")
-    r = _lerp_channel(int(ha[0:2], 16), int(hb[0:2], 16), t)
-    g = _lerp_channel(int(ha[2:4], 16), int(hb[2:4], 16), t)
-    b = _lerp_channel(int(ha[4:6], 16), int(hb[4:6], 16), t)
-    return f"#{r:02x}{g:02x}{b:02x}"
-
-
-def _diff_gradient_color(diff_pct: float) -> tuple:
-    if abs(diff_pct) < 0.5:
-        return C_NEUTRAL, "rgba(148,163,184,0.15)"
-    if diff_pct > 0:
-        t = min(diff_pct / 15.0, 1.0)
-        color = _lerp_hex(C_GREEN_LIGHT, C_GREEN_STRONG, t)
-        return color, f"rgba({int(color[1:3], 16)},{int(color[3:5], 16)},{int(color[5:7], 16)},0.18)"
-    t = min(abs(diff_pct) / 15.0, 1.0)
-    color = _lerp_hex(C_ORANGE_LIGHT, C_RED_DARK, t)
-    return color, f"rgba({int(color[1:3], 16)},{int(color[3:5], 16)},{int(color[5:7], 16)},0.18)"
-
-
-def _target_pct_diff(val: float, target: float) -> float:
-    if target <= 0:
-        return 0.0
-    return ((val - target) / target) * 100.0
-
-
-def _rand_target(base: float, key: str, is_pct: bool = False, decimals: int = 1) -> float:
-    rng = np.random.default_rng(2026 + (hash(key) % 10000))
-    sign = int(rng.choice([-1, 1]))
-    if is_pct:
-        return float(np.clip(base + sign * rng.uniform(2.0, 8.5), 0.0, 100.0))
-    if base == 0:
-        return round(rng.uniform(0.5, 2.5), decimals)
-    target = max(0.0, base + sign * base * rng.uniform(0.06, 0.16))
-    return round(target, decimals)
-
-
-@st.cache_data(show_spinner=False)
-def load_benchmark_targets(source: str) -> dict | None:
-    filename = BENCHMARK_FILES.get(source)
-    if not filename:
-        return None
-    path = Path(filename)
-    if not path.exists():
-        return None
-    try:
-        df = pd.read_excel(path)
-    except ImportError:
-        return None
-    if "Position" not in df.columns or "Minutes played" not in df.columns:
-        return None
-    df = df[df["Position"].isin(BENCHMARK_POSITIONS)].copy()
-    max_mins = float(df["Minutes played"].max()) if len(df) else 0.0
-    if max_mins <= 0:
-        return None
-    min_mins = max_mins * BENCHMARK_MINUTES_RATIO
-    df = df[df["Minutes played"] >= min_mins]
-    if df.empty:
-        return None
-    prog_p90 = df["Progressive passes per 90"].fillna(0)
-    f3_p90 = df["Passes to final third per 90"].fillna(0)
-    prog_acc = df["Accurate progressive passes, %"].fillna(0)
-    f3_acc = df["Accurate passes to final third, %"].fillna(0)
-    prog_attempted_p90 = np.where(prog_acc > 0, prog_p90 / (prog_acc / 100.0), 0.0)
-    f3_success_p90 = f3_p90 * (f3_acc / 100.0)
-    advanced_passes_series = prog_p90 + f3_success_p90
-    advanced_attempted_series = prog_attempted_p90 + f3_p90
-    advanced_success_series = prog_p90 + f3_success_p90
-    advanced_accuracy_series = np.where(
-        advanced_attempted_series > 0,
-        advanced_success_series / advanced_attempted_series * 100.0,
-        0.0,
-    )
-    return {
-        "total_p90": round(float(df["Passes per 90"].mean()), 1),
-        "accuracy_pct": round(float(df["Accurate passes, %"].mean()), 1),
-        "advanced_passes_p90": round(float(advanced_passes_series.mean()), 1),
-        "advanced_accuracy_pct": round(float(advanced_accuracy_series.mean()), 1),
-        "sample_size": int(len(df)),
-        "minutes_threshold": round(min_mins, 0),
-    }
-
-
-def build_metric_targets(pass_base: dict, benchmark_source: str = "MLS") -> dict:
-    bench = load_benchmark_targets(benchmark_source)
-    return {
-        "total_p90": bench["total_p90"] if bench else _rand_target(pass_base["total_p90"], "total_p90"),
-        "accuracy_pct": bench["accuracy_pct"] if bench else _rand_target(pass_base["accuracy_pct"], "accuracy_pct", is_pct=True),
-        "advanced_passes_p90": bench["advanced_passes_p90"] if bench else _rand_target(pass_base.get("advanced_passes_p90", 0), "advanced_passes_p90"),
-        "advanced_accuracy_pct": bench["advanced_accuracy_pct"] if bench else _rand_target(pass_base.get("advanced_accuracy_pct", 0), "advanced_accuracy_pct", is_pct=True),
-        "xt_p90": _rand_target(pass_base["xt_p90"], "xt_p90", decimals=2 if pass_base["xt_p90"] < 5 else 1),
-        "pos_pct": _rand_target(pass_base["pos_pct"], "pos_pct", is_pct=True),
-    }
-
-
-def _fmt_target_value(key: str, targets: dict) -> str:
-    v = targets[key]
-    if key in ("accuracy_pct", "advanced_accuracy_pct", "pos_pct"):
-        return f"{v:.1f}%"
-    if key == "xt_p90":
-        return f"{v:.1f}"
-    return f"{v:.1f}"
-
-
-def build_metric_item(label: str, val: float, disp_val: str, key: str, extra: str = ""):
-    if key in SGA_RANGE_METRICS:
-        return (label, float(val), disp_val, "sga", SGA_RANGE_METRICS[key], "", extra)
-    return (
-        label,
-        float(val),
-        disp_val,
-        "league",
-        _fmt_target_value(key, T_MLS),
-        _fmt_target_value(key, T_TOP_EUR),
-        extra,
-    )
-
-
-def _sga_range_html(range_str: str) -> str:
-    return (
-        f'<div style="font-size:{CARD_SUBTEXT};color:{CARD_MUTED_TEXT};margin-top:4px;">'
-        f"{SGA_RANGE_LABEL}: {range_str}"
-        f"</div>"
-    )
-
-
-def _targets_line_html(disp_mls: str, disp_top_eur: str) -> str:
-    return (
-        f'<div style="font-size:{CARD_SUBTEXT};color:{CARD_MUTED_TEXT};margin-top:4px;">'
-        f"MLS: {disp_mls} · TOP 5 EUR: {disp_top_eur}"
-        f"</div>"
-    )
-
-
-def _item_reference_line(item) -> str:
-    if item[3] == "sga":
-        return _sga_range_html(item[4])
-    return _targets_line_html(item[4], item[5])
-
-
-def _item_sep(idx, total):
+def _item_sep(idx: int, total: int) -> str:
     return "" if idx == total - 1 else f"margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid {CARD_INNER_BORDER};"
 
 
-def _accent_rgb(border_color):
+def _accent_rgb(border_color: str) -> tuple[int, int, int]:
     h = border_color.lstrip("#")
     return tuple(int(h[i : i + 2], 16) for i in (0, 2, 4))
 
 
-def _combined_body_scoreboard(border_color, items):
-    body = ""
-    for idx, item in enumerate(items):
-        label, disp_val = item[0], item[2]
-        extra = item[6] if len(item) > 6 and item[6] else ""
-        body += f'<div style="{_item_sep(idx, len(items))}">'
-        body += (
-            '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;">'
-            f'<span style="font-size:{CARD_LABEL_TEXT};color:#c7cdda;font-weight:600;">{label}</span>'
-            f'<span style="font-size:28px;color:#ffffff;font-weight:700;line-height:1;">{disp_val}</span>'
-            "</div>"
-        )
-        body += _item_reference_line(item)
-        if extra:
-            body += f'<div style="font-size:{CARD_SUBTEXT};color:{CARD_MUTED_TEXT};margin-top:4px;">{extra}</div>'
-        body += "</div>"
-    return body
-
-
-def _target_card_shell_html(title, border_color, body_html):
+def _stats_card_shell_html(title: str, border_color: str, body_html: str) -> str:
     r, g, b = _accent_rgb(border_color)
     grad = (
         f"linear-gradient(150deg, rgba({r},{g},{b},0.18) 0%, "
@@ -825,9 +652,23 @@ def _target_card_shell_html(title, border_color, body_html):
     return html
 
 
-def target_section_card(title, border_color, items):
-    inner = _combined_body_scoreboard(border_color, items)
-    st.markdown(_target_card_shell_html(title, border_color, inner), unsafe_allow_html=True)
+def _simple_body_scoreboard(items: list[tuple[str, str]]) -> str:
+    body = ""
+    for idx, (label, disp_val) in enumerate(items):
+        body += f'<div style="{_item_sep(idx, len(items))}">'
+        body += (
+            '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;">'
+            f'<span style="font-size:{CARD_LABEL_TEXT};color:#c7cdda;font-weight:600;">{label}</span>'
+            f'<span style="font-size:28px;color:#ffffff;font-weight:700;line-height:1;">{disp_val}</span>'
+            "</div>"
+        )
+        body += "</div>"
+    return body
+
+
+def stats_section_card(title: str, border_color: str, items: list[tuple[str, str]]) -> None:
+    inner = _simple_body_scoreboard(items)
+    st.markdown(_stats_card_shell_html(title, border_color, inner), unsafe_allow_html=True)
 
 
 def _base_pitch(bg="#1a1a2e"):
@@ -1074,38 +915,29 @@ def render_player_maps(df: pd.DataFrame):
 
 
 def render_player_cards(stats: dict, tone: str):
-    target_section_card(
+    progressive_total = stats["progressive_successful"] + stats["to_final_third_success"]
+    stats_section_card(
         "Overview",
         tone,
         [
-            build_metric_item("Total Passes Per Game", stats["total_p90"], f"{stats['total_p90']:.1f}", "total_p90"),
-            build_metric_item("% Accuracy", stats["accuracy_pct"], f"{stats['accuracy_pct']:.1f}%", "accuracy_pct"),
+            ("Total Passes", f"{stats['total_passes']:.0f}"),
+            ("% Accuracy", f"{stats['accuracy_pct']:.1f}%"),
         ],
     )
-    target_section_card(
+    stats_section_card(
         "Progressive",
         tone,
         [
-            build_metric_item(
-                "Progressive Passes Per Game",
-                stats["advanced_passes_p90"],
-                f"{stats['advanced_passes_p90']:.1f}",
-                "advanced_passes_p90",
-            ),
-            build_metric_item(
-                "% Progressive Accuracy",
-                stats["advanced_accuracy_pct"],
-                f"{stats['advanced_accuracy_pct']:.1f}%",
-                "advanced_accuracy_pct",
-            ),
+            ("Progressive Passes", f"{progressive_total:.0f}"),
+            ("% Progressive Accuracy", f"{stats['advanced_accuracy_pct']:.1f}%"),
         ],
     )
-    target_section_card(
+    stats_section_card(
         "Impact",
         tone,
         [
-            build_metric_item("Pass Impact Value Per Game", stats["xt_p90"], f"{stats['xt_p90']:.1f}", "xt_p90"),
-            build_metric_item("% Positive Impact", stats["pos_pct"], f"{stats['pos_pct']:.1f}%", "pos_pct"),
+            ("Pass Impact Value", f"{stats['sum_dxt']:.2f}"),
+            ("% Positive Impact", f"{stats['pos_pct']:.1f}%"),
         ],
     )
 
@@ -1123,16 +955,6 @@ if not hudson_dfs or BENTANCUR_KEY not in wc_dfs or BOUADDI_KEY not in wc_dfs:
 hudson_match_names = list(hudson_dfs.keys())
 bentancur_df = wc_dfs[BENTANCUR_KEY]
 bouaddi_df = wc_dfs[BOUADDI_KEY]
-
-_pass_base = {}
-all_hudson_stats = [compute_stats(hudson_dfs[m], m) for m in hudson_match_names]
-if all_hudson_stats:
-    for k in all_hudson_stats[0].keys():
-        if isinstance(all_hudson_stats[0][k], (int, float)):
-            _pass_base[k] = sum(s[k] for s in all_hudson_stats) / len(all_hudson_stats)
-
-T_MLS = build_metric_targets(_pass_base, "MLS")
-T_TOP_EUR = build_metric_targets(_pass_base, BENCHMARK_EUR_KEY)
 
 # ── SIDEBAR (sem customização) ─────────────────────────────────
 st.sidebar.markdown(
@@ -1211,7 +1033,7 @@ for col, player in zip(map_cols, players):
         render_player_maps(player["df"])
 
 st.markdown("---")
-st.markdown("### Estatísticas (Scoreboard — inline targets)")
+st.markdown("### Estatísticas do jogo")
 
 stat_cols = st.columns(3)
 for col, player in zip(stat_cols, players):
