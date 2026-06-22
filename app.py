@@ -100,7 +100,7 @@ XT_MODEL_DESCRIPTIONS = {
     XT_MODEL_HEURISTIC: "Grade sintética normalizada (0–1) por proximidade ao gol.",
     XT_MODEL_HEURISTIC_V2: "Zonas por terço, pico na grande área, progressivo ΔxT >0.15 / >0.35.",
     XT_MODEL_HEURISTIC_V3: "Terços monotônicos, escala por zona, alas com menor xT a partir dos 2/3.",
-    XT_MODEL_HEURISTIC_V4: "v3 + centralidade v1 nos 2/3 ofensivos + lógica xG na grande área.",
+    XT_MODEL_HEURISTIC_V4: "v3 + centralidade v1 nos 2/3 + zona de finalização suave (lógica xG).",
     XT_MODEL_STATSBOMB: "Markov chain — FA WSL 2019/20, probabilidade de gol por célula.",
     XT_MODEL_DATABALLPY: "Modelo pré-treinado open play (264×196), coords convertidas de StatsBomb.",
 }
@@ -147,12 +147,13 @@ XT_V4_FINE_NY = 64
 XT_V4_DISPLAY_SUB = 24
 XT_V4_V1_WING_BASE = 0.80
 XT_V4_V1_CENT_MULT = 1.00
-XT_V4_BOX_X_ON = 88.0
-XT_V4_CORNER_X_ON = 98.0
-XT_V4_CORNER_LAT_ON = 0.55
-XT_V4_CORNER_PENALTY = 0.24
-XT_V4_GOAL_HALF_WIDTH = 7.32 / 68.0 * (FIELD_Y / 2.0)
-XT_V4_ANGLE_REF_DIST = 24.0
+XT_V4_BOX_X_START = 90.0
+XT_V4_BOX_X_FULL = 112.0
+XT_V4_CORNER_LAT_ON = 0.58
+XT_V4_CORNER_PENALTY = 0.10
+XT_V4_CENTRAL_PREMIUM = 0.06
+XT_V4_SHORT_PASS_DIST = 8.0
+XT_V4_SHORT_PASS_FACTOR = 0.55
 
 PROG_MODEL_WYSCOUT = "wyscout"
 PROG_MODEL_OPTA = "opta"
@@ -751,29 +752,39 @@ def _v4_v1_lateral_factor(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     return 1.0 + gate * (v1_weight - 1.0)
 
 
-def _v4_xg_finishing_factor(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """xG proxy: entrada da área central > bandeirinha; ângulo e distância ao gol."""
-    dx = np.maximum(FIELD_X - x, 0.5)
-    dy = np.abs(y - GOAL_Y)
-    dist = np.sqrt(dx ** 2 + dy ** 2)
-    goal_width = 2.0 * XT_V4_GOAL_HALF_WIDTH
-    angle_score = np.arctan(goal_width / (2.0 * dist))
-    angle_ref = np.arctan(goal_width / (2.0 * XT_V4_ANGLE_REF_DIST))
-    angle_score = np.clip(angle_score / angle_ref, 0.38, 1.0)
+def _v4_box_gate(x: np.ndarray) -> np.ndarray:
+    """Smooth ramp into the penalty area (x 90→112), avoids abrupt xT jumps."""
+    span = max(XT_V4_BOX_X_FULL - XT_V4_BOX_X_START, 1.0)
+    t = np.clip((x - XT_V4_BOX_X_START) / span, 0.0, 1.0)
+    return _smoothstep(t)
 
+
+def _v4_xg_finishing_factor(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Gentle xG-style modifier: central premium in the box, mild wide discount — no corner cliff."""
+    box_gate = _v4_box_gate(x)
     cent = _centrality(y)
-    box_gate = _smoothstep(np.clip((x - XT_V4_BOX_X_ON) / (FIELD_X - XT_V4_BOX_X_ON), 0.0, 1.0))
     lat = _lateral_relative_position(y)
-    corner_gate = _smoothstep(np.clip((x - XT_V4_CORNER_X_ON) / (FIELD_X - XT_V4_CORNER_X_ON), 0.0, 1.0))
-    corner_lat = _smoothstep(np.clip((lat - XT_V4_CORNER_LAT_ON) / (1.0 - XT_V4_CORNER_LAT_ON), 0.0, 1.0))
-    corner_discount = 1.0 - XT_V4_CORNER_PENALTY * corner_gate * corner_lat
-    box_quality = (0.84 + 0.16 * cent) * angle_score * corner_discount
-    return (1.0 - box_gate) + box_gate * np.clip(box_quality, 0.65, 1.0)
+    central_bonus = XT_V4_CENTRAL_PREMIUM * box_gate * _smoothstep(cent)
+    wide_in_box = box_gate * _smoothstep(np.clip((lat - XT_V4_CORNER_LAT_ON) / 0.42, 0.0, 1.0))
+    wide_discount = XT_V4_CORNER_PENALTY * wide_in_box
+    return np.clip(1.0 + central_bonus - wide_discount, 0.94, 1.06)
+
+
+def _enforce_row_monotonic_x(grid: np.ndarray) -> np.ndarray:
+    """Ensure xT never decreases toward the opponent goal within each pitch row."""
+    out = grid.copy()
+    for iy in range(out.shape[0]):
+        for ix in range(1, out.shape[1]):
+            if out[iy, ix] < out[iy, ix - 1]:
+                out[iy, ix] = out[iy, ix - 1]
+    return out
 
 
 def _build_heuristic_v4_threat_surface(Xc: np.ndarray, Yc: np.ndarray) -> np.ndarray:
     zonal = _map_zonal_threat(_zone_x_threat_v3_raw(Xc), Xc)
-    return zonal * _v4_v1_lateral_factor(Xc, Yc) * _v4_xg_finishing_factor(Xc, Yc)
+    surface = zonal * _v4_v1_lateral_factor(Xc, Yc) * _v4_xg_finishing_factor(Xc, Yc)
+    surface = np.clip(surface, 0.0, 1.0)
+    return _enforce_row_monotonic_x(surface)
 
 
 @st.cache_data(show_spinner=False)
@@ -798,11 +809,37 @@ def compute_heuristic_v4_xt_grid(NX: int = NX_XT, NY: int = NY_XT, sub: int = XT
     for iy in range(NY):
         for ix in range(NX):
             grid[iy, ix] = threat[iy * sub:(iy + 1) * sub, ix * sub:(ix + 1) * sub].mean()
-    return grid
+    return _enforce_row_monotonic_x(grid)
 
 
 def _adjust_heuristic_v4_pass_delta(row) -> float:
-    return _adjust_heuristic_v3_pass_delta(row)
+    """v4: v3 rules with stricter discount on short passes near the box."""
+    if not row.is_won:
+        return 0.0
+    raw = float(row.xt_end - row.xt_start)
+    if raw >= 0:
+        adjusted = raw
+        short_dist = XT_V4_SHORT_PASS_DIST
+        short_factor = XT_V4_SHORT_PASS_FACTOR
+        if row.pass_distance < short_dist:
+            adjusted *= short_factor
+        elif row.pass_distance < short_dist + 4.0:
+            blend = (row.pass_distance - short_dist) / 4.0
+            adjusted *= short_factor + (1.0 - short_factor) * blend
+        return min(adjusted, XT_V3_MAX_PASS_DELTA)
+    lat_start = _lateral_frac(row.y_start)
+    lat_end = _lateral_frac(row.y_end)
+    if row.x_start < XT_V3_NEG_RECYCLE_X_MAX:
+        adjusted = raw * (XT_V3_NEG_PENALTY_FACTOR if lat_end < lat_start else 1.0)
+    else:
+        adjusted = raw
+    if (
+        row.x_start < XT_V3_PRESSURE_X_MAX
+        and lat_start > XT_V3_WIDE_FRAC
+        and lat_end < lat_start - 0.12
+    ):
+        adjusted += XT_V3_PRESSURE_ESCAPE_BONUS
+    return adjusted
 
 
 def apply_heuristic_v4_xt(df: pd.DataFrame) -> pd.DataFrame:
@@ -1779,8 +1816,8 @@ def render_heuristic_comparison(
     st.markdown("---")
     st.markdown("### Comparativo gráfico — xT Heurístico v1 / v2 / v3 / v4")
     st.caption(
-        "v4: base v3 (terços monotônicos) + centralidade v1 nos 2/3 ofensivos (0.8 alas / 1.0 centro) "
-        "+ lógica xG na grande área (entrada central > bandeirinha de escanteio)."
+        "v4: base v3 + centralidade v1 nos 2/3 + finalização suave na área "
+        "(monotônico até o gol, menos ΔxT em passes curtos)."
     )
 
     gcols_top = st.columns(4)
@@ -2063,7 +2100,7 @@ def build_xt_comparison_pdf() -> bytes:
     c.showPage()
 
     _draw_page_header(
-        "Heurístico v4 | centralidade v1 nos 2/3 + lógica xG na grande área",
+        "Heurístico v4 | centralidade v1 nos 2/3 + finalização suave (monotônico no ataque)",
     )
     _pdf_draw_image_row(
         c, heuristic_v4_panels, page_w, page_h,
