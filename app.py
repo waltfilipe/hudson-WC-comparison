@@ -75,7 +75,7 @@ PASS_TONES = ["#5b9bd5", "#3b82f6", "#1d4ed8"]
 PLAYER_TONES = {
     "Hudson Cicala": "#5b9bd5",
     "Bentancur": "#70ad47",
-    "Sebastian Tounekti": "#d4a843",
+    "Vitinha": "#d4a843",
 }
 CMAP_TOP10 = LinearSegmentedColormap.from_list("top10", ["#fef08a", "#f97316", "#b91c1c"])
 NX_XT, NY_XT = 16, 12
@@ -187,7 +187,7 @@ PROG_MODEL_DESCRIPTIONS = {
 
 HUDSON_DOCX = "Passes - Hudson Cicala.docx"
 BENTANCUR_KEY = "Bentancur (vs Saudi Arabia)"
-TOUNEKTI_KEY = "Sebastian Tounekti"
+VITINHA_KEY = "Vitinha"
 INVERTED_WC_PLAYERS = {BENTANCUR_KEY}
 WORLD_CUP_MINUTES = 90.0
 
@@ -290,25 +290,148 @@ Seta 11: (34.45, 17.69) -> (29.29, 15.16)
 Seta 12: (34.92, 26.15) -> (19.71, 23.42)
 """
 
-TOUNEKTI_RAW_DATA = """
-All Passes – Sebastian Tounekti
+VITINHA_RAW_DATA = """
+All Passes – Vitinha
 
-Seta 1: (60.0, 40.0) -> (29.28, 41.12)
-Seta 2: (59.76, 40.16) -> (48.84, 48.08)
-Seta 3: (59.88, 40.32) -> (57.12, 42.56)
-Seta 4: (32.4, 11.28) -> (32.52, 9.2)
-Seta 5: (45.6, 13.92) -> (67.8, 20.16)
-Seta 6: (108.6, 19.84) -> (108.6, 22.08)
-Seta 7: (93.72, 66.24) -> (74.64, 67.52)
-Seta 8: (90.12, 74.24) -> (79.32, 73.44)
-Seta 9: (75.6, 77.04) -> (54.84, 68.72)
-Seta 10: (68.4, 75.6) -> (55.68, 64.64)
-Seta 11: (102.84, 10.08) -> (108.84, 33.84)
+Seta 1: (46.2, 26.4) -> (53.16, 36.8)
+Seta 2: (41.64, 57.2) -> (39.72, 22.08)
+Seta 3: (53.64, 67.68) -> (38.88, 47.28)
+Seta 4: (40.8, 9.12) -> (45.12, 24.96)
+Seta 5: (54.48, 40.56) -> (65.16, 12.56)
+Seta 6: (53.88, 18.96) -> (72.36, 9.6)
+Seta 7: (53.64, 42.56) -> (48.0, 55.68)
+Seta 8: (76.32, 29.84) -> (74.4, 51.84)
+Seta 9: (77.16, 55.2) -> (81.6, 55.92)
+Seta 10: (75.36, 58.16) -> (85.08, 71.84)
+Seta 11: (76.92, 66.72) -> (78.24, 54.32)
+Seta 12: (76.08, 49.76) -> (80.28, 54.32)
+Seta 13: (79.56, 48.8) -> (87.72, 60.96)
+Seta 14: (79.92, 50.96) -> (107.52, 4.64)
+Seta 15: (75.24, 57.36) -> (86.04, 78.32)
+Seta 16: (79.92, 59.76) -> (97.32, 56.96)
+Seta 17: (83.52, 59.6) -> (81.6, 49.92)
+Seta 18: (84.72, 45.92) -> (98.28, 71.52)
+Seta 19: (28.2, 7.44) -> (27.48, 2.24)
+Seta 20: (77.28, 54.32) -> (90.0, 76.88)
+Seta 21: (75.48, 66.0) -> (85.32, 63.6)
+Seta 22: (72.48, 61.28) -> (52.32, 56.96)
+Seta 23: (71.28, 73.76) -> (85.8, 77.52)
+Seta 24: (67.68, 70.56) -> (74.64, 69.2)
+Seta 25: (61.68, 67.68) -> (53.88, 75.68)
+Seta 26: (63.72, 53.84) -> (51.36, 24.32)
+Seta 27: (46.08, 70.08) -> (68.64, 77.76)
+Seta 28: (49.56, 66.72) -> (37.56, 44.0)
+Seta 29: (14.64, 55.44) -> (38.64, 58.88)
+Seta 30: (20.04, 51.84) -> (33.0, 41.2)
+Seta 31: (36.6, 36.72) -> (48.36, 49.44)
+Seta 32: (54.84, 36.24) -> (56.4, 13.76)
+Seta 33: (45.72, 27.6) -> (48.72, 70.32)
+Seta 34: (48.12, 43.68) -> (48.6, 8.72)
+Seta 35: (49.8, 39.36) -> (49.56, 56.64)
+Seta 36: (81.48, 39.36) -> (93.96, 5.36)
+Seta 37: (41.52, 15.68) -> (41.64, 5.12)
+Seta 38: (27.48, 30.96) -> (43.2, 75.36)
+Seta 39: (50.4, 43.84) -> (63.36, 15.6)
+Seta 40: (73.8, 25.04) -> (76.08, 17.36)
+Seta 41: (64.56, 44.72) -> (64.68, 19.04)
+Seta 42: (49.56, 34.08) -> (49.08, 60.48)
+Seta 43: (76.08, 48.48) -> (80.04, 41.6)
+Seta 44: (76.2, 47.6) -> (79.92, 42.48)
+Seta 45: (76.44, 44.96) -> (75.36, 14.0)
+Seta 46: (72.48, 18.72) -> (67.44, 9.2)
+Seta 47: (67.08, 60.8) -> (78.36, 77.36)
+Seta 48: (72.24, 63.6) -> (81.48, 77.36)
+Seta 49: (74.4, 49.04) -> (82.2, 67.68)
+Seta 50: (74.16, 51.92) -> (81.0, 72.08)
+Seta 51: (68.88, 52.32) -> (63.12, 21.84)
+Seta 52: (45.36, 23.6) -> (55.44, 4.88)
+Seta 53: (41.16, 32.0) -> (46.8, 70.56)
+Seta 54: (39.96, 51.68) -> (42.6, 61.92)
+Seta 55: (85.08, 64.8) -> (77.04, 44.48)
+Seta 56: (86.04, 62.0) -> (73.68, 46.4)
+Seta 57: (76.8, 51.36) -> (81.72, 76.56)
+Seta 58: (74.76, 62.4) -> (64.08, 32.4)
+Seta 59: (45.6, 67.92) -> (39.48, 74.4)
+Seta 60: (35.88, 56.64) -> (10.68, 41.6)
+Seta 61: (37.2, 66.0) -> (42.36, 58.16)
+Seta 62: (36.96, 59.52) -> (43.68, 69.84)
+Seta 63: (36.96, 21.44) -> (35.04, 2.72)
+Seta 64: (35.16, 9.12) -> (35.28, 3.84)
+Seta 65: (31.56, 43.76) -> (33.84, 18.0)
+Seta 66: (46.2, 21.6) -> (50.88, 71.12)
+Seta 67: (45.24, 48.56) -> (57.24, 31.44)
+Seta 68: (63.12, 33.68) -> (72.72, 11.76)
+Seta 69: (84.48, 8.0) -> (81.72, 17.04)
+Seta 70: (80.88, 20.72) -> (79.68, 21.84)
+Seta 71: (59.88, 46.32) -> (53.04, 33.68)
+Seta 72: (32.76, 50.48) -> (41.76, 46.8)
+Seta 73: (36.6, 48.56) -> (45.36, 43.76)
+Seta 74: (44.52, 49.04) -> (50.04, 73.76)
+Seta 75: (44.52, 53.36) -> (39.84, 34.16)
+Seta 76: (54.84, 71.84) -> (67.08, 77.28)
+Seta 77: (46.8, 63.68) -> (34.56, 37.68)
+Seta 78: (75.36, 65.12) -> (68.52, 50.88)
+Seta 79: (69.12, 56.16) -> (69.36, 76.32)
+Seta 80: (54.6, 68.4) -> (35.4, 48.56)
+Seta 81: (50.04, 68.72) -> (45.6, 69.68)
+Seta 82: (49.2, 66.8) -> (44.4, 47.12)
+Seta 83: (42.6, 32.4) -> (45.24, 62.4)
+Seta 84: (40.08, 48.8) -> (53.76, 31.04)
+Seta 85: (28.92, 38.16) -> (5.76, 38.0)
+Seta 86: (11.76, 15.04) -> (3.6, 37.68)
+Seta 87: (34.56, 38.24) -> (40.92, 9.6)
+Seta 88: (44.16, 22.56) -> (28.56, 41.52)
+Seta 89: (54.12, 54.0) -> (50.04, 73.28)
+Seta 90: (76.32, 39.6) -> (82.32, 44.72)
+Seta 91: (72.84, 19.68) -> (75.48, 29.36)
+Seta 92: (50.64, 59.6) -> (57.72, 77.76)
+Seta 93: (45.96, 68.88) -> (35.28, 45.6)
+Seta 94: (39.96, 71.12) -> (58.56, 77.6)
+Seta 95: (40.32, 69.44) -> (35.04, 14.64)
+Seta 96: (64.2, 55.28) -> (101.4, 12.96)
+Seta 97: (72.84, 60.32) -> (64.56, 42.72)
+Seta 98: (75.24, 30.08) -> (83.52, 77.28)
+Seta 99: (64.8, 49.2) -> (68.04, 14.4)
+Seta 100: (47.04, 31.28) -> (87.6, 20.64)
+Seta 101: (21.6, 40.16) -> (36.36, 5.52)
+Seta 102: (45.12, 11.76) -> (38.4, 32.16)
+Seta 103: (74.4, 48.48) -> (82.2, 12.72)
+Seta 104: (81.6, 18.24) -> (109.56, 52.64)
+Seta 105: (82.32, 60.8) -> (103.44, 66.0)
+Seta 106: (45.72, 51.36) -> (48.96, 39.92)
+Seta 107: (78.72, 40.56) -> (78.96, 13.68)
+Seta 108: (13.68, 55.52) -> (51.84, 53.28)
+Seta 109: (18.96, 39.68) -> (54.12, 77.84)
+Seta 110: (43.44, 41.28) -> (43.68, 9.68)
+Seta 111: (37.56, 34.56) -> (45.6, 18.32)
+Seta 112: (54.36, 34.8) -> (54.0, 64.88)
+Seta 113: (65.16, 56.24) -> (65.04, 74.48)
+Seta 114: (36.6, 56.16) -> (35.64, 42.32)
+Seta 115: (62.4, 27.44) -> (64.92, 52.8)
+Seta 116: (77.64, 35.76) -> (88.92, 4.16)
+Seta 117: (81.6, 23.52) -> (96.48, 7.52)
+Seta 118: (74.16, 53.04) -> (79.56, 18.72)
+Seta 119: (55.32, 40.4) -> (64.2, 31.28)
+Seta 120: (81.48, 47.28) -> (75.6, 68.16)
+Seta 121: (63.48, 58.08) -> (56.76, 29.52)
+Seta 122: (65.64, 22.56) -> (79.8, 6.8)
+Seta 123: (69.24, 17.12) -> (87.72, 4.32)
+Seta 124: (87.24, 33.68) -> (93.48, 37.2)
+Seta 125: (17.04, 42.48) -> (39.96, 36.32)
+Seta 126: (75.0, 20.72) -> (72.36, 59.6)
+Seta 127: (71.64, 51.6) -> (78.36, 72.24)
+Seta 128: (73.56, 59.76) -> (90.24, 75.68)
+Seta 129: (42.36, 35.52) -> (47.88, 13.68)
 
 Passes Errados
-Seta 1: (32.4, 11.28) -> (32.52, 9.2)
-Seta 2: (108.6, 19.84) -> (108.6, 22.08)
-Seta 3: (102.84, 10.08) -> (108.84, 33.84)
+Seta 1: (76.08, 49.76) -> (80.28, 54.32)
+Seta 2: (80.88, 20.72) -> (79.68, 21.84)
+Seta 3: (50.04, 68.72) -> (45.6, 69.68)
+Seta 4: (40.08, 48.8) -> (53.76, 31.04)
+Seta 5: (76.32, 39.6) -> (82.32, 44.72)
+Seta 6: (47.04, 31.28) -> (87.6, 20.64)
+Seta 7: (81.6, 18.24) -> (109.56, 52.64)
+Seta 8: (13.68, 55.52) -> (51.84, 53.28)
 """
 
 CARD_TITLE_TEXT = "14px"
@@ -1420,9 +1543,9 @@ def load_all_pass_data() -> tuple[dict, dict]:
     if BENTANCUR_KEY in bentancur_parsed:
         wc_raw[BENTANCUR_KEY] = bentancur_parsed[BENTANCUR_KEY]
 
-    tounekti_parsed = parse_player_passes_text(TOUNEKTI_RAW_DATA)
-    if TOUNEKTI_KEY in tounekti_parsed:
-        wc_raw[TOUNEKTI_KEY] = tounekti_parsed[TOUNEKTI_KEY]
+    vitinha_parsed = parse_player_passes_text(VITINHA_RAW_DATA)
+    if VITINHA_KEY in vitinha_parsed:
+        wc_raw[VITINHA_KEY] = vitinha_parsed[VITINHA_KEY]
 
     hudson_dfs = {name: events_to_dataframe(events, name) for name, events in hudson_raw.items()}
     wc_dfs = {name: events_to_dataframe(events, name) for name, events in wc_raw.items()}
@@ -2004,7 +2127,7 @@ def draw_pass_delta_scatter_pair(
 def render_heuristic_comparison(
     hudson_base: pd.DataFrame,
     bentancur_base: pd.DataFrame,
-    tounekti_base: pd.DataFrame,
+    vitinha_base: pd.DataFrame,
     prog_model: str,
     hudson_label: str,
 ):
@@ -2068,7 +2191,7 @@ def render_heuristic_comparison(
     bases = [
         ("Hudson Cicala", hudson_base, hudson_label),
         ("Bentancur", bentancur_base, "Copa — vs Arábia Saudita"),
-        ("Sebastian Tounekti", tounekti_base, "Sebastian Tounekti"),
+        ("Vitinha", vitinha_base, "Vitinha"),
     ]
     impact_rows = []
     for name, base_df, _ in bases:
@@ -2131,7 +2254,7 @@ def render_heuristic_comparison(
     scatter_colors = {
         "Hudson Cicala": "#5b9bd5",
         "Bentancur": "#70ad47",
-        "Sebastian Tounekti": "#d4a843",
+        "Vitinha": "#d4a843",
     }
     for col, row in zip(scatter_player_cols, impact_rows):
         with col:
@@ -2432,7 +2555,7 @@ def render_player_cards(stats: dict, tone: str, prog_model: str):
 # ── DATA LOAD ──────────────────────────────────────────────────
 hudson_dfs, wc_dfs = load_all_pass_data()
 
-if not hudson_dfs or BENTANCUR_KEY not in wc_dfs or TOUNEKTI_KEY not in wc_dfs:
+if not hudson_dfs or BENTANCUR_KEY not in wc_dfs or VITINHA_KEY not in wc_dfs:
     st.error(
         "Não foi possível carregar os dados. Verifique se o arquivo "
         f"'{HUDSON_DOCX}' está no diretório do app."
@@ -2460,7 +2583,7 @@ st.sidebar.markdown(
     """
     <div style="color:#94a3b8;font-size:0.85rem;line-height:1.5;">
       Comparação de passes por partida.<br>
-      Bentancur e Sebastian Tounekti: jogos fixos da Copa do Mundo.<br>
+      Bentancur e Vitinha: jogos fixos da Copa do Mundo.<br>
       Hudson: selecione o jogo na área principal.
     </div>
     """,
@@ -2502,7 +2625,7 @@ st.sidebar.caption("PDF: modelos externos + evolução heurística v1/v2/v3/v4/v
 
 # ── MAIN LAYOUT ────────────────────────────────────────────────
 st.markdown("## Passes — Comparação de Jogadores")
-st.caption("Hudson Cicala vs Bentancur (vs Arábia Saudita) vs Sebastian Tounekti")
+st.caption("Hudson Cicala vs Bentancur (vs Arábia Saudita) vs Vitinha")
 
 selected_hudson_match = st.selectbox(
     "Selecione o jogo de Hudson Cicala para comparar",
@@ -2513,11 +2636,11 @@ selected_hudson_match = st.selectbox(
 
 hudson_df = prepare_player_df(hudson_dfs[selected_hudson_match], xt_model, prog_model)
 bentancur_df = prepare_player_df(wc_dfs[BENTANCUR_KEY], xt_model, prog_model)
-tounekti_df = prepare_player_df(wc_dfs[TOUNEKTI_KEY], xt_model, prog_model)
+vitinha_df = prepare_player_df(wc_dfs[VITINHA_KEY], xt_model, prog_model)
 
 hudson_stats = compute_stats(hudson_df, selected_hudson_match, prog_model, xt_model)
 bentancur_stats = compute_stats(bentancur_df, BENTANCUR_KEY, prog_model, xt_model)
-tounekti_stats = compute_stats(tounekti_df, TOUNEKTI_KEY, prog_model, xt_model)
+vitinha_stats = compute_stats(vitinha_df, VITINHA_KEY, prog_model, xt_model)
 
 players = [
     {
@@ -2535,11 +2658,11 @@ players = [
         "tone": PLAYER_TONES["Bentancur"],
     },
     {
-        "name": "Sebastian Tounekti",
-        "subtitle": "Sebastian Tounekti",
-        "df": tounekti_df,
-        "stats": tounekti_stats,
-        "tone": PLAYER_TONES["Sebastian Tounekti"],
+        "name": "Vitinha",
+        "subtitle": "Vitinha",
+        "df": vitinha_df,
+        "stats": vitinha_stats,
+        "tone": PLAYER_TONES["Vitinha"],
     },
 ]
 
@@ -2570,7 +2693,7 @@ for col, player in zip(stat_cols, players):
 render_heuristic_comparison(
     hudson_dfs[selected_hudson_match],
     wc_dfs[BENTANCUR_KEY],
-    wc_dfs[TOUNEKTI_KEY],
+    wc_dfs[VITINHA_KEY],
     prog_model,
     selected_hudson_match,
 )
