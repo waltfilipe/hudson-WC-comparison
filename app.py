@@ -97,7 +97,7 @@ XT_MODEL_LABELS = {
 XT_MODEL_DESCRIPTIONS = {
     XT_MODEL_HEURISTIC: "Grade sintética normalizada (0–1) por proximidade ao gol.",
     XT_MODEL_HEURISTIC_V2: "Zonas por terço, pico na grande área, progressivo ΔxT >0.15 / >0.35.",
-    XT_MODEL_HEURISTIC_V3: "Terços monotônicos, normalização por zona, ΔxT relativo à posição.",
+    XT_MODEL_HEURISTIC_V3: "Terços monotônicos, escala por zona, penalidade lateral suave no ataque.",
     XT_MODEL_STATSBOMB: "Markov chain — FA WSL 2019/20, probabilidade de gol por célula.",
     XT_MODEL_DATABALLPY: "Modelo pré-treinado open play (264×196), coords convertidas de StatsBomb.",
 }
@@ -137,6 +137,9 @@ XT_V3_NEG_RECYCLE_X_MAX = 60.0
 XT_V3_MAX_PASS_DELTA = 0.45
 XT_V3_SHORT_PASS_DIST = 5.0
 XT_V3_SHORT_PASS_FACTOR = 0.7
+XT_V3_LAT_DISC_MID = 0.035
+XT_V3_LAT_DISC_ATT = 0.12
+XT_V3_LAT_CURVE_POWER = 1.35
 
 PROG_MODEL_WYSCOUT = "wyscout"
 PROG_MODEL_OPTA = "opta"
@@ -630,12 +633,27 @@ def _map_zonal_threat(raw: np.ndarray, x: np.ndarray) -> np.ndarray:
     return result
 
 
+def _lateral_relative_position(y: np.ndarray) -> np.ndarray:
+    """0 at the center line, 1 at the touchline."""
+    return np.abs(y - GOAL_Y) / (FIELD_Y / 2.0)
+
+
 def _location_factor_v3(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Centrality bonus only in the attacking third (max +4%)."""
-    cent = _centrality(y)
-    att_t = np.clip((x - FINAL_THIRD_LINE_X) / (FIELD_X - FINAL_THIRD_LINE_X), 0.0, 1.0)
+    """Smooth lateral discount: flat in defence, mild in midfield, stronger in attack."""
+    lat = _lateral_relative_position(y)
+    mid_t = np.clip(
+        (x - OPT_ATTACKING_TWO_THIRDS_X) / (FINAL_THIRD_LINE_X - OPT_ATTACKING_TWO_THIRDS_X),
+        0.0, 1.0,
+    )
+    att_t = np.clip(
+        (x - FINAL_THIRD_LINE_X) / (FIELD_X - FINAL_THIRD_LINE_X),
+        0.0, 1.0,
+    )
+    mid_gate = _smoothstep(mid_t) * (1.0 - _smoothstep(att_t))
     att_gate = _smoothstep(att_t)
-    return 0.96 + 0.04 * cent * att_gate
+    max_discount = XT_V3_LAT_DISC_MID * mid_gate + XT_V3_LAT_DISC_ATT * att_gate
+    lateral_curve = _smoothstep(lat ** XT_V3_LAT_CURVE_POWER)
+    return 1.0 - max_discount * lateral_curve
 
 
 def _build_heuristic_v3_threat_surface(Xc: np.ndarray, Yc: np.ndarray) -> np.ndarray:
@@ -1665,6 +1683,7 @@ def render_heuristic_comparison(
     st.caption(
         "v2: pico na grande área (normalização global). "
         "v3: terços monotônicos com escala fixa por zona (def 0–25%, meio 25–60%, ataque 60–100%), "
+        "penalidade lateral suave nas alas (até ~12% no ataque), "
         "ΔxT progressivo relativo à posição, teto de 0.45 por passe."
     )
 
