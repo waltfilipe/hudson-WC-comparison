@@ -193,6 +193,7 @@ PROG_MODEL_DESCRIPTIONS = {
 }
 
 HUDSON_DOCX = "Passes - Hudson Cicala.docx"
+HUDSON_ALL_MATCHES_KEY = "__hudson_all_matches__"
 BENTANCUR_KEY = "Bentancur (vs Saudi Arabia)"
 VITINHA_KEY = "Vitinha"
 INVERTED_WC_PLAYERS = {BENTANCUR_KEY}
@@ -616,6 +617,37 @@ def is_progressive_xt_attempt_for_model(
     ) in ("progressive", "highly")
 
 
+def _row_if_won(row):
+    if hasattr(row, "_replace"):
+        return row._replace(is_won=True)
+    if isinstance(row, pd.Series):
+        won = row.copy()
+        won["is_won"] = True
+        return won
+    return row
+
+
+def hypothetical_delta_xt(row, xt_model: str = XT_MODEL_HEURISTIC) -> float:
+    """ΔxT como se o passe tivesse sido completado (para contagem de tentativas progressivas)."""
+    won_row = _row_if_won(row)
+    if xt_model == XT_MODEL_HEURISTIC_V2:
+        return _adjust_heuristic_v2_pass_delta(won_row)
+    if xt_model == XT_MODEL_HEURISTIC_V3:
+        return _adjust_heuristic_v3_pass_delta(won_row)
+    if xt_model == XT_MODEL_HEURISTIC_V4:
+        return _adjust_heuristic_v4_pass_delta(won_row)
+    if xt_model == XT_MODEL_HEURISTIC_V5:
+        return _adjust_heuristic_v5_pass_delta(won_row)
+    return float(row.xt_end - row.xt_start)
+
+
+def progressive_delta_for_attempt(row, xt_model: str = XT_MODEL_HEURISTIC) -> float:
+    """ΔxT usado para classificar tentativa progressiva por xT."""
+    if row.is_won:
+        return float(row.delta_xt)
+    return hypothetical_delta_xt(row, xt_model)
+
+
 def is_progressive_attempt(row, model: str, xt_model: str = XT_MODEL_HEURISTIC) -> bool:
     if model == PROG_MODEL_WYSCOUT:
         return is_progressive_wyscout(row.x_start, row.y_start, row.x_end, row.y_end)
@@ -623,7 +655,7 @@ def is_progressive_attempt(row, model: str, xt_model: str = XT_MODEL_HEURISTIC) 
         return is_progressive_opta(row.x_start, row.y_start, row.x_end, row.y_end)
     return is_progressive_xt_attempt_for_model(
         row.xt_start, row.xt_end, row.x_end, row.pass_distance, xt_model,
-        delta_xt=getattr(row, "delta_xt", None),
+        delta_xt=progressive_delta_for_attempt(row, xt_model),
     )
 
 
@@ -634,21 +666,16 @@ def apply_progressive_model(
     progressive_flags = []
     highly_xt_flags = []
     for row in df.itertuples(index=False):
-        if model == PROG_MODEL_WYSCOUT:
-            attempt = is_progressive_wyscout(row.x_start, row.y_start, row.x_end, row.y_end)
-        elif model == PROG_MODEL_OPTA:
-            attempt = is_progressive_opta(row.x_start, row.y_start, row.x_end, row.y_end)
+        attempt = is_progressive_attempt(row, model, xt_model)
+        progressive_flags.append(row.is_won and attempt)
+        if model == PROG_MODEL_XT:
+            classify_delta = float(row.delta_xt) if row.is_won else hypothetical_delta_xt(row, xt_model)
         else:
-            xt_cat = classify_xt_progressive_for_model(
-                row.xt_start, row.xt_end, row.x_end, row.pass_distance, xt_model,
-                delta_xt=row.delta_xt,
-            )
-            attempt = xt_cat in ("progressive", "highly")
+            classify_delta = row.delta_xt
         xt_cat = classify_xt_progressive_for_model(
             row.xt_start, row.xt_end, row.x_end, row.pass_distance, xt_model,
-            delta_xt=row.delta_xt,
+            delta_xt=classify_delta,
         )
-        progressive_flags.append(row.is_won and attempt)
         highly_xt_flags.append(row.is_won and xt_cat == "highly")
     df["progressive"] = progressive_flags
     df["highly_progressive"] = highly_xt_flags
@@ -1577,6 +1604,44 @@ def load_all_pass_data() -> tuple[dict, dict]:
     hudson_dfs = {name: events_to_dataframe(events, name) for name, events in hudson_raw.items()}
     wc_dfs = {name: events_to_dataframe(events, name) for name, events in wc_raw.items()}
     return hudson_dfs, wc_dfs
+
+
+def _hudson_match_sort_key(name: str) -> tuple[int, int, str]:
+    m = re.search(r"\((\d{2})-(\d{2})\)", name)
+    if m:
+        return (int(m.group(1)), int(m.group(2)), name.lower())
+    return (99, 99, name.lower())
+
+
+def sorted_hudson_match_names(hudson_dfs: dict[str, pd.DataFrame]) -> list[str]:
+    return sorted(hudson_dfs.keys(), key=_hudson_match_sort_key)
+
+
+def hudson_v5_match_options(hudson_dfs: dict[str, pd.DataFrame]) -> list[str]:
+    return [HUDSON_ALL_MATCHES_KEY, *sorted_hudson_match_names(hudson_dfs)]
+
+
+def format_hudson_v5_match_option(key: str, hudson_dfs: dict[str, pd.DataFrame]) -> str:
+    if key == HUDSON_ALL_MATCHES_KEY:
+        total = sum(len(df) for df in hudson_dfs.values())
+        return f"Todas as partidas — {len(hudson_dfs)} jogos ({total} passes)"
+    return f"{key} ({len(hudson_dfs[key])} passes)"
+
+
+def resolve_hudson_v5_dataframe(
+    hudson_dfs: dict[str, pd.DataFrame],
+    selection: str,
+) -> tuple[pd.DataFrame, str]:
+    if selection == HUDSON_ALL_MATCHES_KEY:
+        frames = []
+        for name in sorted_hudson_match_names(hudson_dfs):
+            part = hudson_dfs[name].copy()
+            part["match"] = name
+            frames.append(part)
+        combined = pd.concat(frames, ignore_index=True)
+        label = f"Todas as partidas ({len(hudson_dfs)} jogos · {len(combined)} passes)"
+        return combined, label
+    return hudson_dfs[selection], selection
 
 
 def compute_stats(
@@ -2769,7 +2834,8 @@ if not hudson_dfs or BENTANCUR_KEY not in wc_dfs or VITINHA_KEY not in wc_dfs:
     )
     st.stop()
 
-hudson_match_names = list(hudson_dfs.keys())
+hudson_match_names = sorted_hudson_match_names(hudson_dfs)
+hudson_v5_match_names = hudson_v5_match_options(hudson_dfs)
 
 # ── SIDEBAR (sem customização) ─────────────────────────────────
 st.sidebar.markdown(
@@ -2921,8 +2987,10 @@ with tab_compare:
 with tab_hudson:
     selected_hudson_v5_match = st.selectbox(
         "Selecione o jogo de Hudson Cicala",
-        options=hudson_match_names,
+        options=hudson_v5_match_names,
+        format_func=lambda k: format_hudson_v5_match_option(k, hudson_dfs),
         index=0,
         key="hudson_v5_match_selector",
     )
-    render_hudson_v5_tab(hudson_dfs[selected_hudson_v5_match], selected_hudson_v5_match)
+    hudson_v5_df, hudson_v5_label = resolve_hudson_v5_dataframe(hudson_dfs, selected_hudson_v5_match)
+    render_hudson_v5_tab(hudson_v5_df, hudson_v5_label)
