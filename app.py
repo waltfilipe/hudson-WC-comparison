@@ -103,7 +103,7 @@ XT_MODEL_DESCRIPTIONS = {
     XT_MODEL_HEURISTIC_V2: "Zonas por terço, pico na grande área, progressivo ΔxT >0.15 / >0.35.",
     XT_MODEL_HEURISTIC_V3: "Terços monotônicos, escala por zona, alas com menor xT a partir dos 2/3.",
     XT_MODEL_HEURISTIC_V4: "v3 + centralidade v1 nos 2/3 + zona de finalização suave (lógica xG).",
-    XT_MODEL_HEURISTIC_V5: "v5 + limiares calibrados (P75/P92 por zona, ref. StatsBomb).",
+    XT_MODEL_HEURISTIC_V5: "v4 + transição suave entre zonas, ΔxT ajustado na classificação, teto por zona.",
     XT_MODEL_STATSBOMB: "Markov chain — FA WSL 2019/20, probabilidade de gol por célula.",
     XT_MODEL_DATABALLPY: "Modelo pré-treinado open play (264×196), coords convertidas de StatsBomb.",
 }
@@ -170,8 +170,6 @@ XT_V5_MAX_DELTA_MID = 0.36
 XT_V5_MAX_DELTA_ATT = 0.42
 XT_V5_MAX_DELTA_BOX = 0.52
 XT_V5_DELTA_CAP_BLEND = 12.0
-XT_V5_CALIB_PROG_PCT = 75.0
-XT_V5_CALIB_HIGH_PCT = 92.0
 
 PASS_MAP_FILTER_ALL = "all"
 PASS_MAP_FILTER_SUPER = "super"
@@ -568,87 +566,19 @@ def classify_xt_progressive_v5(
     delta_xt: float,
     x_end: float,
     pass_distance: float,
-    x_start: float | None = None,
 ) -> str:
-    """v5: adjusted delta_xt + zone thresholds calibrated on StatsBomb reference passes."""
+    """v5: uses adjusted delta_xt (short-pass discount) for progressive labels."""
     if pass_distance <= XT_MIN_PASS_DISTANCE:
         return "none"
     if delta_xt <= 0:
         return "none"
-    prog_thresh, high_thresh = _v5_zone_thresholds(x_start if x_start is not None else xt_start * FIELD_X)
+    prog_thresh = max(XT_V3_PROG_FLOOR, XT_V3_PROG_SCALE * (1.0 - xt_start))
+    high_thresh = max(XT_V3_HIGH_FLOOR, XT_V3_HIGH_SCALE * (1.0 - xt_start))
     if delta_xt <= prog_thresh:
         return "none"
     if delta_xt > high_thresh:
         return "highly"
     return "progressive"
-
-
-def _x_zone_bucket(x_start: float) -> str:
-    x = float(x_start)
-    if x >= XT_V4_BOX_X_START:
-        return "box"
-    if x >= FINAL_THIRD_LINE_X:
-        return "att"
-    if x >= OPT_ATTACKING_TWO_THIRDS_X:
-        return "mid"
-    return "def"
-
-
-@st.cache_data(show_spinner=False)
-def compute_v5_reference_thresholds() -> dict[str, dict[str, float]]:
-    """P75/P92 of positive v5 ΔxT by pitch zone from StatsBomb FA WSL completed passes."""
-    parser = Sbopen()
-    fine = compute_heuristic_v5_fine_grid()
-    deltas: dict[str, list[float]] = {z: [] for z in ("def", "mid", "att", "box")}
-    df_match = parser.match(competition_id=37, season_id=42)
-    for match_id in df_match.match_id.unique():
-        event = parser.event(match_id)[0]
-        passes = event[(event["type_name"] == "Pass") & (event["outcome_name"].isnull())]
-        for _, row in passes.iterrows():
-            dist = float(np.hypot(row["end_x"] - row["x"], row["end_y"] - row["y"]))
-            if dist <= XT_MIN_PASS_DISTANCE:
-                continue
-            xs = xt_value_bilinear(float(row["x"]), float(row["y"]), fine)
-            xe = xt_value_bilinear(float(row["end_x"]), float(row["end_y"]), fine)
-            delta = xe - xs
-            if delta <= 0:
-                continue
-            deltas[_x_zone_bucket(float(row["x"]))].append(float(delta))
-    thresholds: dict[str, dict[str, float]] = {}
-    for zone, values in deltas.items():
-        arr = np.asarray(values, dtype=float)
-        if arr.size < 50:
-            thresholds[zone] = {
-                "prog": max(XT_V3_PROG_FLOOR, XT_V3_PROG_SCALE * 0.6),
-                "high": max(XT_V3_HIGH_FLOOR, XT_V3_HIGH_SCALE * 0.6),
-            }
-        else:
-            thresholds[zone] = {
-                "prog": float(np.percentile(arr, XT_V5_CALIB_PROG_PCT)),
-                "high": float(np.percentile(arr, XT_V5_CALIB_HIGH_PCT)),
-            }
-    return thresholds
-
-
-def _v5_zone_thresholds(x_start: float) -> tuple[float, float]:
-    th = compute_v5_reference_thresholds()[_x_zone_bucket(x_start)]
-    return th["prog"], th["high"]
-
-
-def _xt_progressive_category(
-    xt_start: float,
-    xt_end: float,
-    x_start: float,
-    x_end: float,
-    pass_distance: float,
-    xt_model: str,
-    delta_xt: float,
-) -> str:
-    if xt_model == XT_MODEL_HEURISTIC_V5:
-        return classify_xt_progressive_v5(xt_start, delta_xt, x_end, pass_distance, x_start=x_start)
-    return classify_xt_progressive_for_model(
-        xt_start, xt_end, x_end, pass_distance, xt_model, delta_xt=delta_xt,
-    )
 
 
 def classify_xt_progressive_for_model(
@@ -658,15 +588,15 @@ def classify_xt_progressive_for_model(
     pass_distance: float,
     xt_model: str,
     delta_xt: float | None = None,
-    x_start: float | None = None,
 ) -> str:
     if xt_model == XT_MODEL_HEURISTIC_V2:
         return classify_xt_progressive_v2(xt_start, xt_end, x_end, pass_distance)
     if xt_model == XT_MODEL_HEURISTIC_V5:
-        use_delta = delta_xt if delta_xt is not None else xt_end - xt_start
         return classify_xt_progressive_v5(
-            xt_start, use_delta, x_end, pass_distance,
-            x_start=x_start if x_start is not None else xt_start * FIELD_X,
+            xt_start,
+            delta_xt if delta_xt is not None else xt_end - xt_start,
+            x_end,
+            pass_distance,
         )
     if xt_model in (XT_MODEL_HEURISTIC_V3, XT_MODEL_HEURISTIC_V4):
         return classify_xt_progressive_v3(xt_start, xt_end, x_end, pass_distance)
@@ -680,11 +610,9 @@ def is_progressive_xt_attempt(xt_start: float, xt_end: float, x_end: float, pass
 def is_progressive_xt_attempt_for_model(
     xt_start: float, xt_end: float, x_end: float, pass_distance: float, xt_model: str,
     delta_xt: float | None = None,
-    x_start: float | None = None,
 ) -> bool:
     return classify_xt_progressive_for_model(
-        xt_start, xt_end, x_end, pass_distance, xt_model,
-        delta_xt=delta_xt, x_start=x_start,
+        xt_start, xt_end, x_end, pass_distance, xt_model, delta_xt=delta_xt,
     ) in ("progressive", "highly")
 
 
@@ -693,52 +621,35 @@ def is_progressive_attempt(row, model: str, xt_model: str = XT_MODEL_HEURISTIC) 
         return is_progressive_wyscout(row.x_start, row.y_start, row.x_end, row.y_end)
     if model == PROG_MODEL_OPTA:
         return is_progressive_opta(row.x_start, row.y_start, row.x_end, row.y_end)
-    raw_delta = getattr(row, "raw_delta_xt", row.xt_end - row.xt_start)
     return is_progressive_xt_attempt_for_model(
         row.xt_start, row.xt_end, row.x_end, row.pass_distance, xt_model,
-        delta_xt=raw_delta, x_start=row.x_start,
+        delta_xt=getattr(row, "delta_xt", None),
     )
-
-
-def _spatial_progressive_attempt(x_start, y_start, x_end, y_end, model: str) -> bool:
-    if model == PROG_MODEL_WYSCOUT:
-        return is_progressive_wyscout(x_start, y_start, x_end, y_end)
-    if model == PROG_MODEL_OPTA:
-        return is_progressive_opta(x_start, y_start, x_end, y_end)
-    return False
 
 
 def apply_progressive_model(
     df: pd.DataFrame, model: str, xt_model: str = XT_MODEL_HEURISTIC,
 ) -> pd.DataFrame:
     df = df.copy()
-    if "raw_delta_xt" not in df.columns:
-        df["raw_delta_xt"] = df["xt_end"] - df["xt_start"]
-    progressive_attempt_flags = []
     progressive_flags = []
     highly_xt_flags = []
     for row in df.itertuples(index=False):
-        if model in (PROG_MODEL_WYSCOUT, PROG_MODEL_OPTA):
-            attempt = _spatial_progressive_attempt(
-                row.x_start, row.y_start, row.x_end, row.y_end, model,
-            )
+        if model == PROG_MODEL_WYSCOUT:
+            attempt = is_progressive_wyscout(row.x_start, row.y_start, row.x_end, row.y_end)
+        elif model == PROG_MODEL_OPTA:
+            attempt = is_progressive_opta(row.x_start, row.y_start, row.x_end, row.y_end)
         else:
-            attempt = is_progressive_xt_attempt_for_model(
+            xt_cat = classify_xt_progressive_for_model(
                 row.xt_start, row.xt_end, row.x_end, row.pass_distance, xt_model,
-                delta_xt=row.raw_delta_xt, x_start=row.x_start,
+                delta_xt=row.delta_xt,
             )
-        success_delta = row.delta_xt if xt_model == XT_MODEL_HEURISTIC_V5 else row.raw_delta_xt
-        xt_cat_success = _xt_progressive_category(
-            row.xt_start, row.xt_end, row.x_start, row.x_end, row.pass_distance,
-            xt_model, success_delta,
+            attempt = xt_cat in ("progressive", "highly")
+        xt_cat = classify_xt_progressive_for_model(
+            row.xt_start, row.xt_end, row.x_end, row.pass_distance, xt_model,
+            delta_xt=row.delta_xt,
         )
-        progressive_attempt_flags.append(attempt)
-        if model in (PROG_MODEL_WYSCOUT, PROG_MODEL_OPTA):
-            progressive_flags.append(row.is_won and attempt)
-        else:
-            progressive_flags.append(row.is_won and xt_cat_success in ("progressive", "highly"))
-        highly_xt_flags.append(row.is_won and xt_cat_success == "highly")
-    df["progressive_attempt"] = progressive_attempt_flags
+        progressive_flags.append(row.is_won and attempt)
+        highly_xt_flags.append(row.is_won and xt_cat == "highly")
     df["progressive"] = progressive_flags
     df["highly_progressive"] = highly_xt_flags
     return df
@@ -883,12 +794,6 @@ def _adjust_heuristic_v2_pass_delta(row) -> float:
     ):
         adjusted += XT_V2_PRESSURE_ESCAPE_BONUS
     return adjusted
-
-
-def _attach_xt_columns(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out["raw_delta_xt"] = out["xt_end"] - out["xt_start"]
-    return out
 
 
 def apply_heuristic_v2_xt(df: pd.DataFrame) -> pd.DataFrame:
@@ -1414,7 +1319,7 @@ def apply_xt_model(df: pd.DataFrame, xt_model: str) -> pd.DataFrame:
         out["delta_xt"] = np.where(out["is_won"], out["xt_end"] - out["xt_start"], 0.0)
     else:
         out = apply_xt_grid(df, get_xt_grid(xt_model))
-    return _attach_xt_columns(out)
+    return out
 
 
 def xt_value_from_grid(x: float, y: float, grid: np.ndarray) -> float:
@@ -1629,7 +1534,6 @@ def events_to_dataframe(events: list, match_name: str) -> pd.DataFrame:
     dfm["number"] = np.arange(1, len(dfm) + 1)
     dfm["is_won"] = dfm["type"].eq("PASS WON")
     dfm["progressive"] = False
-    dfm["progressive_attempt"] = False
     dfm["highly_progressive"] = False
     dfm["direction"] = dfm.apply(
         lambda r: classify_pass_direction(r["x_start"], r["y_start"], r["x_end"], r["y_end"]),
@@ -1681,8 +1585,7 @@ def compute_stats(
     prog_model: str = PROG_MODEL_WYSCOUT,
     xt_model: str = XT_MODEL_HEURISTIC,
 ) -> dict:
-    if "progressive_attempt" not in df.columns:
-        df = apply_progressive_model(df, prog_model, xt_model)
+    df = apply_progressive_model(df, prog_model, xt_model)
     total = len(df)
     mins = get_match_minutes(match_name)
     p90_factor = 90.0 / mins if mins > 0 else 1.0
@@ -1729,7 +1632,10 @@ def compute_stats(
     progressive_total = int(df["progressive"].sum())
     highly_progressive = int(df["highly_progressive"].sum())
     highly_progressive_pct = (highly_progressive / successful * 100.0) if successful else 0.0
-    progressive_attempted = int(df["progressive_attempt"].sum())
+    progressive_unsuccessful = int(
+        (~df["is_won"] & df.apply(lambda r: is_progressive_attempt(r, prog_model, xt_model), axis=1)).sum()
+    )
+    progressive_attempted = progressive_total + progressive_unsuccessful
     progressive_accuracy = (progressive_total / progressive_attempted * 100.0) if progressive_attempted else 0.0
     to_final_third = (df["x_start"] < FINAL_THIRD_LINE_X) & (df["x_end"] >= FINAL_THIRD_LINE_X)
     to_final_third_total = int(to_final_third.sum())
@@ -2264,7 +2170,7 @@ def render_heuristic_comparison(
     st.markdown("---")
     st.markdown("### Comparativo gráfico — xT Heurístico v1 / v2 / v3 / v4 / v5")
     st.caption(
-        "v5: limiares P75/P92 por zona (ref. StatsBomb) + ΔxT ajustado na classificação "
+        "v5: transição extra-suave entre zonas (blend 26 m, smootherstep) + ΔxT ajustado na classificação "
         "+ teto de ganho por zona (maior na área, menor no campo defensivo)."
     )
 
@@ -2657,7 +2563,6 @@ def render_player_maps(df: pd.DataFrame, prog_model: str, pass_filter: str = PAS
 
 def render_player_cards(stats: dict, tone: str, prog_model: str):
     progressive_items = [
-        ("Tentativas Progressivas", f"{stats['progressive_attempted']:.0f}"),
         ("Passes Progressivos", f"{stats['progressive_successful']:.0f}"),
         ("Super Progressivos", f"{stats['highly_progressive']:.0f}"),
         ("% Acurácia Progressiva", f"{stats['progressive_accuracy_pct']:.1f}%"),
@@ -2734,13 +2639,6 @@ xt_model = st.sidebar.radio(
     label_visibility="collapsed",
 )
 st.sidebar.caption(XT_MODEL_DESCRIPTIONS[xt_model])
-if xt_model == XT_MODEL_HEURISTIC_V5:
-    _v5_th = compute_v5_reference_thresholds()
-    _v5_lines = [
-        f"{zone}: prog≥{vals['prog']:.3f}, super>{vals['high']:.3f}"
-        for zone, vals in _v5_th.items()
-    ]
-    st.sidebar.caption("Limiares v5 (ref. StatsBomb): " + " · ".join(_v5_lines))
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Critério de Progressive Pass**")
