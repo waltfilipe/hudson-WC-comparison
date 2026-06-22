@@ -1707,6 +1707,174 @@ def compute_stats(
     }
 
 
+def build_hudson_v5_dataframe(raw_df: pd.DataFrame) -> pd.DataFrame:
+    """Prepara passes do Hudson com heurístico xT v5 e flags progressivas por modelo."""
+    base = apply_xt_model(raw_df, XT_MODEL_HEURISTIC_V5)
+    if "delta_xt_v2" not in base.columns:
+        base["delta_xt_v2"] = apply_heuristic_v2_xt(raw_df)["delta_xt"]
+
+    wyscout_df = apply_progressive_model(base, PROG_MODEL_WYSCOUT, XT_MODEL_HEURISTIC_V5)
+    base["progressive_wyscout"] = wyscout_df["progressive"].astype(bool)
+
+    opta_df = apply_progressive_model(base, PROG_MODEL_OPTA, XT_MODEL_HEURISTIC_V5)
+    base["progressive_opta"] = opta_df["progressive"].astype(bool)
+
+    xt_df = apply_progressive_model(base, PROG_MODEL_XT, XT_MODEL_HEURISTIC_V5)
+    base["progressive_xt"] = xt_df["progressive"].astype(bool)
+    base["highly_progressive"] = xt_df["highly_progressive"].astype(bool)
+    base["progressive"] = base["progressive_xt"]
+    return base
+
+
+def _hudson_progressive_breakdown(
+    df: pd.DataFrame,
+    prog_model: str,
+    success_col: str,
+) -> dict:
+    """Contagem e acurácia de progressivos (mesma lógica de compute_stats)."""
+    attempts = df.apply(
+        lambda r: is_progressive_attempt(r, prog_model, XT_MODEL_HEURISTIC_V5),
+        axis=1,
+    )
+    successful = int(df[success_col].astype(bool).sum())
+    unsuccessful = int((~df["is_won"] & attempts).sum())
+    attempted = successful + unsuccessful
+    accuracy_pct = (successful / attempted * 100.0) if attempted else 0.0
+    return {
+        "successful": successful,
+        "attempted": attempted,
+        "accuracy_pct": round(accuracy_pct, 2),
+    }
+
+
+def compute_hudson_v5_stats(df: pd.DataFrame) -> dict:
+    """Estatísticas completas do Hudson com mapa xT v5 e comparação de progressivos."""
+    total = len(df)
+    if total == 0:
+        empty_prog = {"successful": 0, "attempted": 0, "accuracy_pct": 0.0}
+        return {
+            "total_passes": 0,
+            "successful_passes": 0,
+            "accuracy_pct": 0.0,
+            "progressive_wyscout": empty_prog.copy(),
+            "progressive_opta": empty_prog.copy(),
+            "progressive_xt": empty_prog.copy(),
+            "highly_progressive": 0,
+            "sum_dxt": 0.0,
+            "sum_xt_end": 0.0,
+            "mean_xt_end": 0.0,
+            "positive_delta_xt_pct": 0.0,
+        }
+
+    successful = int(df["is_won"].sum())
+    accuracy_pct = successful / total * 100.0
+    wyscout = _hudson_progressive_breakdown(df, PROG_MODEL_WYSCOUT, "progressive_wyscout")
+    opta = _hudson_progressive_breakdown(df, PROG_MODEL_OPTA, "progressive_opta")
+    xt_prog = _hudson_progressive_breakdown(df, PROG_MODEL_XT, "progressive_xt")
+    highly_progressive = int(df["highly_progressive"].astype(bool).sum())
+
+    delta_xt = pd.to_numeric(df["delta_xt"], errors="coerce").fillna(0.0)
+    xt_end = pd.to_numeric(df["xt_end"], errors="coerce").fillna(0.0)
+    sum_dxt = float(delta_xt[df["is_won"]].sum())
+    sum_xt_end = float(xt_end[df["is_won"]].sum())
+    mean_xt_end = float(xt_end.mean())
+    positive_delta_xt_pct = float((delta_xt > 0).mean() * 100.0)
+
+    return {
+        "total_passes": total,
+        "successful_passes": successful,
+        "accuracy_pct": round(accuracy_pct, 2),
+        "progressive_wyscout": wyscout,
+        "progressive_opta": opta,
+        "progressive_xt": xt_prog,
+        "highly_progressive": highly_progressive,
+        "sum_dxt": round(sum_dxt, 3),
+        "sum_xt_end": round(sum_xt_end, 3),
+        "mean_xt_end": round(mean_xt_end, 3),
+        "positive_delta_xt_pct": round(positive_delta_xt_pct, 1),
+    }
+
+
+def render_hudson_v5_tab(raw_df: pd.DataFrame, match_name: str) -> None:
+    """Aba dedicada ao Hudson com mapa xT v5 e cards comparativos de progressivos."""
+    df = build_hudson_v5_dataframe(raw_df)
+    stats = compute_hudson_v5_stats(df)
+    tone = PLAYER_TONES["Hudson Cicala"]
+
+    st.markdown("## Hudson Cicala — Heurístico xT v5")
+    st.caption(f"Partida: {match_name} · modelo fixo: {XT_MODEL_LABELS[XT_MODEL_HEURISTIC_V5]}")
+
+    map_col, cards_col = st.columns([1.35, 1.0], gap="large")
+    with map_col:
+        st.markdown('<div class="map-label">Mapa xT v5</div>', unsafe_allow_html=True)
+        img_xt, fig_xt = draw_xt_grid_map(
+            compute_heuristic_v5_xt_grid(),
+            "Superfície de ameaça heurística v5",
+            value_fmt=".2f",
+            as_percent=True,
+            color_percentile=(5, 95),
+        )
+        plt.close(fig_xt)
+        st.image(img_xt, use_container_width=True)
+        st.caption(
+            "Zonas suavizadas (blend 26 m) · desconto curto 8 m · teto de ΔxT por zona"
+        )
+
+    with cards_col:
+        stats_section_card(
+            "Resumo geral",
+            tone,
+            [
+                ("Total de passes", f"{stats['total_passes']:.0f}"),
+                ("Passes certos", f"{stats['successful_passes']:.0f}"),
+                ("% Acurácia geral", f"{stats['accuracy_pct']:.1f}%"),
+                ("Super progressivos (xT v5)", f"{stats['highly_progressive']:.0f}"),
+            ],
+        )
+        stats_section_card(
+            "xT e ΔxT (v5)",
+            tone,
+            [
+                ("Σ ΔxT", f"{stats['sum_dxt']:.3f}"),
+                ("% ΔxT positivo", f"{stats['positive_delta_xt_pct']:.1f}%"),
+                ("Σ xT final (certos)", f"{stats['sum_xt_end']:.3f}"),
+                ("xT médio por passe", f"{stats['mean_xt_end']:.3f}"),
+            ],
+        )
+
+    st.markdown("### Passes progressivos por critério")
+    prog_cols = st.columns(3, gap="medium")
+    prog_specs = [
+        ("Wyscout", stats["progressive_wyscout"]),
+        ("Opta", stats["progressive_opta"]),
+        ("xT (v5)", stats["progressive_xt"]),
+    ]
+    for col, (label, prog) in zip(prog_cols, prog_specs):
+        with col:
+            stats_section_card(
+                label,
+                tone,
+                [
+                    ("Progressivos certos", f"{prog['successful']:.0f}"),
+                    ("Tentativas progressivas", f"{prog['attempted']:.0f}"),
+                    ("% acertados", f"{prog['accuracy_pct']:.1f}%"),
+                ],
+            )
+
+    st.markdown("---")
+    st.markdown("### Mapas de passes (xT v5)")
+    pass_cols = st.columns(2, gap="large")
+    with pass_cols[0]:
+        st.markdown('<div class="player-header">Todos os passes</div>', unsafe_allow_html=True)
+        render_player_maps(df, PROG_MODEL_XT, PASS_MAP_FILTER_ALL)
+    with pass_cols[1]:
+        st.markdown(
+            f'<div class="player-header">Super progressivos ({stats["highly_progressive"]:.0f})</div>',
+            unsafe_allow_html=True,
+        )
+        render_player_maps(df, PROG_MODEL_XT, PASS_MAP_FILTER_SUPER)
+
+
 def _item_sep(idx: int, total: int) -> str:
     return "" if idx == total - 1 else f"margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid {CARD_INNER_BORDER};"
 
@@ -2673,76 +2841,88 @@ st.sidebar.download_button(
 st.sidebar.caption("PDF: modelos externos + evolução heurística v1/v2/v3/v4/v5.")
 
 # ── MAIN LAYOUT ────────────────────────────────────────────────
-st.markdown("## Passes — Comparação de Jogadores")
-st.caption("Hudson Cicala vs Bentancur (vs Arábia Saudita) vs Vitinha")
+tab_compare, tab_hudson = st.tabs(["Comparação jogadores", "Hudson Cicala (v5)"])
 
-selected_hudson_match = st.selectbox(
-    "Selecione o jogo de Hudson Cicala para comparar",
-    options=hudson_match_names,
-    index=0,
-    key="hudson_match_selector",
-)
+with tab_compare:
+    st.markdown("## Passes — Comparação de Jogadores")
+    st.caption("Hudson Cicala vs Bentancur (vs Arábia Saudita) vs Vitinha")
 
-hudson_df = prepare_player_df(hudson_dfs[selected_hudson_match], xt_model, prog_model)
-bentancur_df = prepare_player_df(wc_dfs[BENTANCUR_KEY], xt_model, prog_model)
-vitinha_df = prepare_player_df(wc_dfs[VITINHA_KEY], xt_model, prog_model)
+    selected_hudson_match = st.selectbox(
+        "Selecione o jogo de Hudson Cicala para comparar",
+        options=hudson_match_names,
+        index=0,
+        key="hudson_match_selector",
+    )
 
-hudson_stats = compute_stats(hudson_df, selected_hudson_match, prog_model, xt_model)
-bentancur_stats = compute_stats(bentancur_df, BENTANCUR_KEY, prog_model, xt_model)
-vitinha_stats = compute_stats(vitinha_df, VITINHA_KEY, prog_model, xt_model)
+    hudson_df = prepare_player_df(hudson_dfs[selected_hudson_match], xt_model, prog_model)
+    bentancur_df = prepare_player_df(wc_dfs[BENTANCUR_KEY], xt_model, prog_model)
+    vitinha_df = prepare_player_df(wc_dfs[VITINHA_KEY], xt_model, prog_model)
 
-players = [
-    {
-        "name": "Hudson Cicala",
-        "subtitle": selected_hudson_match,
-        "df": hudson_df,
-        "stats": hudson_stats,
-        "tone": PLAYER_TONES["Hudson Cicala"],
-    },
-    {
-        "name": "Bentancur",
-        "subtitle": "Copa do Mundo — vs Arábia Saudita",
-        "df": bentancur_df,
-        "stats": bentancur_stats,
-        "tone": PLAYER_TONES["Bentancur"],
-    },
-    {
-        "name": "Vitinha",
-        "subtitle": "Vitinha",
-        "df": vitinha_df,
-        "stats": vitinha_stats,
-        "tone": PLAYER_TONES["Vitinha"],
-    },
-]
+    hudson_stats = compute_stats(hudson_df, selected_hudson_match, prog_model, xt_model)
+    bentancur_stats = compute_stats(bentancur_df, BENTANCUR_KEY, prog_model, xt_model)
+    vitinha_stats = compute_stats(vitinha_df, VITINHA_KEY, prog_model, xt_model)
 
-st.markdown("---")
-st.markdown(
-    f"### Mapas de Passe — {PROG_MODEL_LABELS[prog_model]} · xT: {XT_MODEL_LABELS[xt_model]}"
-)
+    players = [
+        {
+            "name": "Hudson Cicala",
+            "subtitle": selected_hudson_match,
+            "df": hudson_df,
+            "stats": hudson_stats,
+            "tone": PLAYER_TONES["Hudson Cicala"],
+        },
+        {
+            "name": "Bentancur",
+            "subtitle": "Copa do Mundo — vs Arábia Saudita",
+            "df": bentancur_df,
+            "stats": bentancur_stats,
+            "tone": PLAYER_TONES["Bentancur"],
+        },
+        {
+            "name": "Vitinha",
+            "subtitle": "Vitinha",
+            "df": vitinha_df,
+            "stats": vitinha_stats,
+            "tone": PLAYER_TONES["Vitinha"],
+        },
+    ]
 
-map_cols = st.columns(3)
-for col, player in zip(map_cols, players):
-    with col:
-        st.markdown(f'<div class="player-header">{player["name"]}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="player-sub">{player["subtitle"]}</div>', unsafe_allow_html=True)
-        render_player_maps(player["df"], prog_model, pass_map_filter)
+    st.markdown("---")
+    st.markdown(
+        f"### Mapas de Passe — {PROG_MODEL_LABELS[prog_model]} · xT: {XT_MODEL_LABELS[xt_model]}"
+    )
 
-st.markdown("---")
-st.markdown(
-    f"### Estatísticas do jogo — {PROG_MODEL_LABELS[prog_model]} · xT: {XT_MODEL_LABELS[xt_model]}"
-)
+    map_cols = st.columns(3)
+    for col, player in zip(map_cols, players):
+        with col:
+            st.markdown(f'<div class="player-header">{player["name"]}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="player-sub">{player["subtitle"]}</div>', unsafe_allow_html=True)
+            render_player_maps(player["df"], prog_model, pass_map_filter)
 
-stat_cols = st.columns(3)
-for col, player in zip(stat_cols, players):
-    with col:
-        st.markdown(f'<div class="player-header">{player["name"]}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="player-sub">{player["subtitle"]}</div>', unsafe_allow_html=True)
-        render_player_cards(player["stats"], player["tone"], prog_model)
+    st.markdown("---")
+    st.markdown(
+        f"### Estatísticas do jogo — {PROG_MODEL_LABELS[prog_model]} · xT: {XT_MODEL_LABELS[xt_model]}"
+    )
 
-render_heuristic_comparison(
-    hudson_dfs[selected_hudson_match],
-    wc_dfs[BENTANCUR_KEY],
-    wc_dfs[VITINHA_KEY],
-    prog_model,
-    selected_hudson_match,
-)
+    stat_cols = st.columns(3)
+    for col, player in zip(stat_cols, players):
+        with col:
+            st.markdown(f'<div class="player-header">{player["name"]}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="player-sub">{player["subtitle"]}</div>', unsafe_allow_html=True)
+            render_player_cards(player["stats"], player["tone"], prog_model)
+
+    render_heuristic_comparison(
+        hudson_dfs[selected_hudson_match],
+        wc_dfs[BENTANCUR_KEY],
+        wc_dfs[VITINHA_KEY],
+        prog_model,
+        selected_hudson_match,
+    )
+
+with tab_hudson:
+    selected_hudson_v5_match = st.selectbox(
+        "Selecione o jogo de Hudson Cicala",
+        options=hudson_match_names,
+        index=0,
+        key="hudson_v5_match_selector",
+    )
+    render_hudson_v5_tab(hudson_dfs[selected_hudson_v5_match], selected_hudson_v5_match)
