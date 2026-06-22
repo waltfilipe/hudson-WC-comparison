@@ -85,12 +85,14 @@ LATERAL_MIN_DIST = 12.0
 XT_MODEL_HEURISTIC = "heuristic"
 XT_MODEL_HEURISTIC_V2 = "heuristic_v2"
 XT_MODEL_HEURISTIC_V3 = "heuristic_v3"
+XT_MODEL_HEURISTIC_V4 = "heuristic_v4"
 XT_MODEL_STATSBOMB = "statsbomb"
 XT_MODEL_DATABALLPY = "databallpy"
 XT_MODEL_LABELS = {
     XT_MODEL_HEURISTIC: "Heurístico (v1)",
     XT_MODEL_HEURISTIC_V2: "Heurístico v2 (construção)",
     XT_MODEL_HEURISTIC_V3: "Heurístico v3 (zonas)",
+    XT_MODEL_HEURISTIC_V4: "Heurístico v4 (v1 + xG)",
     XT_MODEL_STATSBOMB: "StatsBomb (Karun Singh)",
     XT_MODEL_DATABALLPY: "DataBallPy (open play)",
 }
@@ -98,6 +100,7 @@ XT_MODEL_DESCRIPTIONS = {
     XT_MODEL_HEURISTIC: "Grade sintética normalizada (0–1) por proximidade ao gol.",
     XT_MODEL_HEURISTIC_V2: "Zonas por terço, pico na grande área, progressivo ΔxT >0.15 / >0.35.",
     XT_MODEL_HEURISTIC_V3: "Terços monotônicos, escala por zona, alas com menor xT a partir dos 2/3.",
+    XT_MODEL_HEURISTIC_V4: "v3 + centralidade v1 nos 2/3 ofensivos + lógica xG na grande área.",
     XT_MODEL_STATSBOMB: "Markov chain — FA WSL 2019/20, probabilidade de gol por célula.",
     XT_MODEL_DATABALLPY: "Modelo pré-treinado open play (264×196), coords convertidas de StatsBomb.",
 }
@@ -139,6 +142,17 @@ XT_V3_SHORT_PASS_DIST = 5.0
 XT_V3_SHORT_PASS_FACTOR = 0.7
 XT_V3_LAT_DISC_MAX = 0.16
 XT_V3_LAT_CURVE_POWER = 1.0
+XT_V4_FINE_NX = 96
+XT_V4_FINE_NY = 64
+XT_V4_DISPLAY_SUB = 24
+XT_V4_V1_WING_BASE = 0.80
+XT_V4_V1_CENT_MULT = 1.00
+XT_V4_BOX_X_ON = 88.0
+XT_V4_CORNER_X_ON = 98.0
+XT_V4_CORNER_LAT_ON = 0.55
+XT_V4_CORNER_PENALTY = 0.24
+XT_V4_GOAL_HALF_WIDTH = 7.32 / 68.0 * (FIELD_Y / 2.0)
+XT_V4_ANGLE_REF_DIST = 24.0
 
 PROG_MODEL_WYSCOUT = "wyscout"
 PROG_MODEL_OPTA = "opta"
@@ -377,7 +391,7 @@ def classify_xt_progressive_v3(
     x_end: float,
     pass_distance: float,
 ) -> str:
-    """v3: limiar de ΔxT relativo à posição no campo."""
+    """v3/v4: limiar de ΔxT relativo à posição no campo."""
     if pass_distance <= XT_MIN_PASS_DISTANCE:
         return "none"
     delta_abs = xt_end - xt_start
@@ -390,6 +404,15 @@ def classify_xt_progressive_v3(
     return "progressive"
 
 
+def classify_xt_progressive_v4(
+    xt_start: float,
+    xt_end: float,
+    x_end: float,
+    pass_distance: float,
+) -> str:
+    return classify_xt_progressive_v3(xt_start, xt_end, x_end, pass_distance)
+
+
 def classify_xt_progressive_for_model(
     xt_start: float,
     xt_end: float,
@@ -399,7 +422,7 @@ def classify_xt_progressive_for_model(
 ) -> str:
     if xt_model == XT_MODEL_HEURISTIC_V2:
         return classify_xt_progressive_v2(xt_start, xt_end, x_end, pass_distance)
-    if xt_model == XT_MODEL_HEURISTIC_V3:
+    if xt_model in (XT_MODEL_HEURISTIC_V3, XT_MODEL_HEURISTIC_V4):
         return classify_xt_progressive_v3(xt_start, xt_end, x_end, pass_distance)
     return classify_xt_progressive(xt_start, xt_end, x_end, pass_distance)
 
@@ -716,6 +739,81 @@ def apply_heuristic_v3_xt(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _v4_v1_lateral_factor(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """v1-style column weight (0.8 wing / 1.0 center), active only from attacking 2/3 (x≥40)."""
+    cent = _centrality(y)
+    v1_weight = XT_V4_V1_WING_BASE + (XT_V4_V1_CENT_MULT - XT_V4_V1_WING_BASE) * cent
+    depth_2_3 = np.clip(
+        (x - OPT_ATTACKING_TWO_THIRDS_X) / (FIELD_X - OPT_ATTACKING_TWO_THIRDS_X),
+        0.0, 1.0,
+    )
+    gate = _smoothstep(depth_2_3)
+    return 1.0 + gate * (v1_weight - 1.0)
+
+
+def _v4_xg_finishing_factor(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """xG proxy: entrada da área central > bandeirinha; ângulo e distância ao gol."""
+    dx = np.maximum(FIELD_X - x, 0.5)
+    dy = np.abs(y - GOAL_Y)
+    dist = np.sqrt(dx ** 2 + dy ** 2)
+    goal_width = 2.0 * XT_V4_GOAL_HALF_WIDTH
+    angle_score = np.arctan(goal_width / (2.0 * dist))
+    angle_ref = np.arctan(goal_width / (2.0 * XT_V4_ANGLE_REF_DIST))
+    angle_score = np.clip(angle_score / angle_ref, 0.38, 1.0)
+
+    cent = _centrality(y)
+    box_gate = _smoothstep(np.clip((x - XT_V4_BOX_X_ON) / (FIELD_X - XT_V4_BOX_X_ON), 0.0, 1.0))
+    lat = _lateral_relative_position(y)
+    corner_gate = _smoothstep(np.clip((x - XT_V4_CORNER_X_ON) / (FIELD_X - XT_V4_CORNER_X_ON), 0.0, 1.0))
+    corner_lat = _smoothstep(np.clip((lat - XT_V4_CORNER_LAT_ON) / (1.0 - XT_V4_CORNER_LAT_ON), 0.0, 1.0))
+    corner_discount = 1.0 - XT_V4_CORNER_PENALTY * corner_gate * corner_lat
+    box_quality = (0.84 + 0.16 * cent) * angle_score * corner_discount
+    return (1.0 - box_gate) + box_gate * np.clip(box_quality, 0.65, 1.0)
+
+
+def _build_heuristic_v4_threat_surface(Xc: np.ndarray, Yc: np.ndarray) -> np.ndarray:
+    zonal = _map_zonal_threat(_zone_x_threat_v3_raw(Xc), Xc)
+    return zonal * _v4_v1_lateral_factor(Xc, Yc) * _v4_xg_finishing_factor(Xc, Yc)
+
+
+@st.cache_data(show_spinner=False)
+def compute_heuristic_v4_fine_grid(nx: int = XT_V4_FINE_NX, ny: int = XT_V4_FINE_NY) -> np.ndarray:
+    xe = np.linspace(0.0, FIELD_X, nx)
+    ye = np.linspace(0.0, FIELD_Y, ny)
+    Xc, Yc = np.meshgrid(xe, ye)
+    return _build_heuristic_v4_threat_surface(Xc, Yc)
+
+
+@st.cache_data(show_spinner=False)
+def compute_heuristic_v4_xt_grid(NX: int = NX_XT, NY: int = NY_XT, sub: int = XT_V4_DISPLAY_SUB) -> np.ndarray:
+    ncols_hr = NX * sub
+    nrows_hr = NY * sub
+    xe = np.linspace(0, FIELD_X, ncols_hr + 1)
+    ye = np.linspace(0, FIELD_Y, nrows_hr + 1)
+    xc = (xe[:-1] + xe[1:]) / 2
+    yc_arr = (ye[:-1] + ye[1:]) / 2
+    Xc, Yc = np.meshgrid(xc, yc_arr)
+    threat = _build_heuristic_v4_threat_surface(Xc, Yc)
+    grid = np.zeros((NY, NX))
+    for iy in range(NY):
+        for ix in range(NX):
+            grid[iy, ix] = threat[iy * sub:(iy + 1) * sub, ix * sub:(ix + 1) * sub].mean()
+    return grid
+
+
+def _adjust_heuristic_v4_pass_delta(row) -> float:
+    return _adjust_heuristic_v3_pass_delta(row)
+
+
+def apply_heuristic_v4_xt(df: pd.DataFrame) -> pd.DataFrame:
+    fine = compute_heuristic_v4_fine_grid()
+    out = df.copy()
+    out["xt_start"] = out.apply(lambda r: xt_value_bilinear(r["x_start"], r["y_start"], fine), axis=1)
+    out["xt_end"] = out.apply(lambda r: xt_value_bilinear(r["x_end"], r["y_end"], fine), axis=1)
+    out["delta_xt"] = out.apply(_adjust_heuristic_v4_pass_delta, axis=1)
+    return out
+
+
 @st.cache_data(show_spinner=False)
 def compute_statsbomb_xt_grid():
     """Karun Singh xT on StatsBomb open data (FA WSL 2019/20)."""
@@ -830,6 +928,8 @@ def get_xt_grid(xt_model: str) -> np.ndarray:
         return compute_heuristic_v2_xt_grid()
     if xt_model == XT_MODEL_HEURISTIC_V3:
         return compute_heuristic_v3_xt_grid()
+    if xt_model == XT_MODEL_HEURISTIC_V4:
+        return compute_heuristic_v4_xt_grid()
     return compute_heuristic_xt_grid()
 
 
@@ -838,6 +938,8 @@ def apply_xt_model(df: pd.DataFrame, xt_model: str) -> pd.DataFrame:
         return apply_heuristic_v2_xt(df)
     if xt_model == XT_MODEL_HEURISTIC_V3:
         return apply_heuristic_v3_xt(df)
+    if xt_model == XT_MODEL_HEURISTIC_V4:
+        return apply_heuristic_v4_xt(df)
     if xt_model == XT_MODEL_DATABALLPY:
         out = df.copy()
         out["xt_start"] = out.apply(lambda r: databallpy_xt_value(r["x_start"], r["y_start"]), axis=1)
@@ -1609,19 +1711,21 @@ def draw_heuristic_impact_chart(player_rows: list[dict]):
     v1_vals = [p["v1_impact"] for p in player_rows]
     v2_vals = [p["v2_impact"] for p in player_rows]
     v3_vals = [p["v3_impact"] for p in player_rows]
-    fig, ax = plt.subplots(figsize=(8.0, 3.8), facecolor="#1a1a2e")
+    v4_vals = [p["v4_impact"] for p in player_rows]
+    fig, ax = plt.subplots(figsize=(9.0, 3.8), facecolor="#1a1a2e")
     ax.set_facecolor("#1a1a2e")
     x = np.arange(len(names))
-    w = 0.25
-    ax.bar(x - w, v1_vals, w, label="Heurístico v1", color="#5b9bd5", alpha=0.92)
-    ax.bar(x, v2_vals, w, label="Heurístico v2", color="#70ad47", alpha=0.92)
-    ax.bar(x + w, v3_vals, w, label="Heurístico v3", color="#d4a843", alpha=0.92)
+    w = 0.19
+    ax.bar(x - 1.5 * w, v1_vals, w, label="Heurístico v1", color="#5b9bd5", alpha=0.92)
+    ax.bar(x - 0.5 * w, v2_vals, w, label="Heurístico v2", color="#70ad47", alpha=0.92)
+    ax.bar(x + 0.5 * w, v3_vals, w, label="Heurístico v3", color="#d4a843", alpha=0.92)
+    ax.bar(x + 1.5 * w, v4_vals, w, label="Heurístico v4", color="#c8102e", alpha=0.92)
     ax.set_xticks(x)
     ax.set_xticklabels(names, color="#c7cdda", fontsize=9)
     ax.set_ylabel("Pass Impact (Σ ΔxT)", color="#c7cdda", fontsize=9)
     ax.tick_params(colors="#94a3b8", labelsize=8)
-    ax.set_title("Pass Impact por jogador — v1 vs v2 vs v3", color="#eef1f7", fontsize=11, pad=10)
-    ax.legend(facecolor="#1a1a2e", edgecolor="#444466", labelcolor="#eef1f7", fontsize=8)
+    ax.set_title("Pass Impact por jogador — v1 / v2 / v3 / v4", color="#eef1f7", fontsize=11, pad=10)
+    ax.legend(facecolor="#1a1a2e", edgecolor="#444466", labelcolor="#eef1f7", fontsize=7)
     ax.axhline(0, color="#444466", lw=0.8)
     for spine in ax.spines.values():
         spine.set_color("#444466")
@@ -1670,23 +1774,23 @@ def render_heuristic_comparison(
     grid_v1 = compute_heuristic_xt_grid()
     grid_v2 = compute_heuristic_v2_xt_grid()
     grid_v3 = compute_heuristic_v3_xt_grid()
+    grid_v4 = compute_heuristic_v4_xt_grid()
 
     st.markdown("---")
-    st.markdown("### Comparativo gráfico — xT Heurístico v1 / v2 / v3")
+    st.markdown("### Comparativo gráfico — xT Heurístico v1 / v2 / v3 / v4")
     st.caption(
-        "v2: pico na grande área (normalização global). "
-        "v3: terços monotônicos com escala fixa por zona (def 0–25%, meio 25–60%, ataque 60–100%), "
-        "penalidade lateral a partir dos 2/3 ofensivos (até ~16% nas alas), "
-        "ΔxT progressivo relativo à posição, teto de 0.45 por passe."
+        "v4: base v3 (terços monotônicos) + centralidade v1 nos 2/3 ofensivos (0.8 alas / 1.0 centro) "
+        "+ lógica xG na grande área (entrada central > bandeirinha de escanteio)."
     )
 
-    gcols = st.columns(3)
-    grid_panels = [
+    gcols_top = st.columns(4)
+    grid_panels_top = [
         (grid_v1, "Heurístico v1", {"value_fmt": ".2f"}),
         (grid_v2, "Heurístico v2", {"value_fmt": ".2f"}),
         (grid_v3, "Heurístico v3", {"value_fmt": ".2f", "as_percent": True, "color_percentile": (5, 95)}),
+        (grid_v4, "Heurístico v4", {"value_fmt": ".2f", "as_percent": True, "color_percentile": (5, 95)}),
     ]
-    for col, (grid, label, kwargs) in zip(gcols, grid_panels):
+    for col, (grid, label, kwargs) in zip(gcols_top, grid_panels_top):
         with col:
             img, fig = draw_xt_grid_map(grid, label, **kwargs)
             plt.close(fig)
@@ -1694,9 +1798,9 @@ def render_heuristic_comparison(
 
     diff_cols = st.columns(3)
     diff_panels = [
-        (grid_v2, grid_v1, "Δ v2 − v1 (normalizados)"),
+        (grid_v4, grid_v3, "Δ v4 − v3 (normalizados)"),
+        (grid_v4, grid_v1, "Δ v4 − v1 (normalizados)"),
         (grid_v3, grid_v2, "Δ v3 − v2 (normalizados)"),
-        (grid_v3, grid_v1, "Δ v3 − v1 (normalizados)"),
     ]
     for col, (grid_a, grid_b, label) in zip(diff_cols, diff_panels):
         with col:
@@ -1714,14 +1818,17 @@ def render_heuristic_comparison(
         df_v1 = prepare_player_df(base_df, XT_MODEL_HEURISTIC, prog_model)
         df_v2 = prepare_player_df(base_df, XT_MODEL_HEURISTIC_V2, prog_model)
         df_v3 = prepare_player_df(base_df, XT_MODEL_HEURISTIC_V3, prog_model)
+        df_v4 = prepare_player_df(base_df, XT_MODEL_HEURISTIC_V4, prog_model)
         impact_rows.append({
             "name": name,
             "v1_impact": float(df_v1.loc[df_v1["is_won"], "delta_xt"].sum()),
             "v2_impact": float(df_v2.loc[df_v2["is_won"], "delta_xt"].sum()),
             "v3_impact": float(df_v3.loc[df_v3["is_won"], "delta_xt"].sum()),
+            "v4_impact": float(df_v4.loc[df_v4["is_won"], "delta_xt"].sum()),
             "df_v1": df_v1,
             "df_v2": df_v2,
             "df_v3": df_v3,
+            "df_v4": df_v4,
         })
 
     st.markdown("#### Pass Impact e correlação de ΔxT")
@@ -1731,22 +1838,22 @@ def render_heuristic_comparison(
         plt.close(fig)
         st.image(img, use_container_width=True)
     with scatter_col:
-        scatter_tabs = st.tabs(["v2 vs v3", "v1 vs v3"])
+        scatter_tabs = st.tabs(["v3 vs v4", "v1 vs v4"])
         with scatter_tabs[0]:
             bent = next(r for r in impact_rows if r["name"] == "Bentancur")
             img, fig = draw_pass_delta_scatter_pair(
-                bent["df_v2"], bent["df_v3"],
-                "Bentancur — ΔxT v2 vs v3",
-                "v2", "v3", color="#70ad47",
+                bent["df_v3"], bent["df_v4"],
+                "Bentancur — ΔxT v3 vs v4",
+                "v3", "v4", color="#c8102e",
             )
             plt.close(fig)
             st.image(img, use_container_width=True)
         with scatter_tabs[1]:
             bent = next(r for r in impact_rows if r["name"] == "Bentancur")
             img, fig = draw_pass_delta_scatter_pair(
-                bent["df_v1"], bent["df_v3"],
-                "Bentancur — ΔxT v1 vs v3",
-                "v1", "v3", color="#5b9bd5",
+                bent["df_v1"], bent["df_v4"],
+                "Bentancur — ΔxT v1 vs v4",
+                "v1", "v4", color="#5b9bd5",
             )
             plt.close(fig)
             st.image(img, use_container_width=True)
@@ -1760,10 +1867,10 @@ def render_heuristic_comparison(
     for col, row in zip(scatter_player_cols, impact_rows):
         with col:
             img, fig = draw_pass_delta_scatter_pair(
-                row["df_v2"], row["df_v3"],
-                f"{row['name']} — v2 vs v3",
-                "v2", "v3",
-                color=scatter_colors.get(row["name"], "#d4a843"),
+                row["df_v3"], row["df_v4"],
+                f"{row['name']} — v3 vs v4",
+                "v3", "v4",
+                color=scatter_colors.get(row["name"], "#c8102e"),
             )
             plt.close(fig)
             st.image(img, use_container_width=True)
@@ -1771,24 +1878,29 @@ def render_heuristic_comparison(
     st.markdown("#### Resumo numérico (jogo atual)")
     summary_rows = []
     for row in impact_rows:
-        df_v1, df_v2, df_v3 = row["df_v1"], row["df_v2"], row["df_v3"]
+        df_v1, df_v2, df_v3, df_v4 = row["df_v1"], row["df_v2"], row["df_v3"], row["df_v4"]
         won_v1 = df_v1[df_v1["is_won"]]
         won_v2 = df_v2[df_v2["is_won"]]
         won_v3 = df_v3[df_v3["is_won"]]
+        won_v4 = df_v4[df_v4["is_won"]]
         summary_rows.append({
             "Jogador": row["name"],
             "ΣΔxT v1": round(float(won_v1["delta_xt"].sum()), 3),
             "ΣΔxT v2": round(float(won_v2["delta_xt"].sum()), 3),
             "ΣΔxT v3": round(float(won_v3["delta_xt"].sum()), 3),
+            "ΣΔxT v4": round(float(won_v4["delta_xt"].sum()), 3),
             "% Δ>0 v1": round((won_v1["delta_xt"] > 0).mean() * 100, 1),
             "% Δ>0 v2": round((won_v2["delta_xt"] > 0).mean() * 100, 1),
             "% Δ>0 v3": round((won_v3["delta_xt"] > 0).mean() * 100, 1),
+            "% Δ>0 v4": round((won_v4["delta_xt"] > 0).mean() * 100, 1),
             "Prog. v1": int(df_v1["progressive"].sum()),
             "Super v1": int(df_v1["highly_progressive"].sum()),
             "Prog. v2": int(df_v2["progressive"].sum()),
             "Super v2": int(df_v2["highly_progressive"].sum()),
             "Prog. v3": int(df_v3["progressive"].sum()),
             "Super v3": int(df_v3["highly_progressive"].sum()),
+            "Prog. v4": int(df_v4["progressive"].sum()),
+            "Super v4": int(df_v4["highly_progressive"].sum()),
         })
     st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
@@ -1828,6 +1940,7 @@ def build_xt_comparison_pdf() -> bytes:
     h_grid = compute_heuristic_xt_grid()
     h2_grid = compute_heuristic_v2_xt_grid()
     h3_grid = compute_heuristic_v3_xt_grid()
+    h4_grid = compute_heuristic_v4_xt_grid()
     sb_grid = compute_statsbomb_xt_grid()
     db_grid = compute_databallpy_xt_grid()
 
@@ -1880,6 +1993,23 @@ def build_xt_comparison_pdf() -> bytes:
             "Δ v3 − v1",
         ),
     ]
+    heuristic_v4_panels = [
+        (
+            draw_xt_grid_map(
+                h4_grid, "Heurístico v4", value_fmt=".2f",
+                as_percent=True, color_percentile=(5, 95),
+            )[0],
+            "Heurístico v4",
+        ),
+        (
+            draw_xt_diff_map(h4_grid, h3_grid, "Δ v4 − v3 (normalizados)")[0],
+            "Δ v4 − v3",
+        ),
+        (
+            draw_xt_diff_map(h4_grid, h_grid, "Δ v4 − v1 (normalizados)")[0],
+            "Δ v4 − v1",
+        ),
+    ]
     plt.close("all")
 
     buf = BytesIO()
@@ -1924,10 +2054,19 @@ def build_xt_comparison_pdf() -> bytes:
     c.showPage()
 
     _draw_page_header(
-        "Diferenças entre versões heurísticas (normalizadas)",
+        "Diferenças entre versões heurísticas v1–v3 (normalizadas)",
     )
     _pdf_draw_image_row(
         c, heuristic_panels[3:], page_w, page_h,
+        y_top=page_h - 68, row_h=page_h - 100,
+    )
+    c.showPage()
+
+    _draw_page_header(
+        "Heurístico v4 | centralidade v1 nos 2/3 + lógica xG na grande área",
+    )
+    _pdf_draw_image_row(
+        c, heuristic_v4_panels, page_w, page_h,
         y_top=page_h - 68, row_h=page_h - 100,
     )
     c.showPage()
@@ -2056,7 +2195,7 @@ st.sidebar.download_button(
     mime="application/pdf",
     use_container_width=True,
 )
-st.sidebar.caption("PDF: modelos externos + evolução heurística v1/v2/v3.")
+st.sidebar.caption("PDF: modelos externos + evolução heurística v1/v2/v3/v4.")
 
 # ── MAIN LAYOUT ────────────────────────────────────────────────
 st.markdown("## Passes — Comparação de Jogadores")
