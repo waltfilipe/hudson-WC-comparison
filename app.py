@@ -75,7 +75,7 @@ PASS_TONES = ["#5b9bd5", "#3b82f6", "#1d4ed8"]
 PLAYER_TONES = {
     "Hudson Cicala": "#5b9bd5",
     "Bentancur": "#70ad47",
-    "Bouaddi": "#d4a843",
+    "Mohamed Salah": "#c8102e",
 }
 CMAP_TOP10 = LinearSegmentedColormap.from_list("top10", ["#fef08a", "#f97316", "#b91c1c"])
 NX_XT, NY_XT = 16, 12
@@ -133,10 +133,9 @@ PROG_MODEL_DESCRIPTIONS = {
 }
 
 HUDSON_DOCX = "Passes - Hudson Cicala.docx"
-WORLD_CUP_DOCX = "Passes World Cup.docx"
 BENTANCUR_KEY = "Bentancur (vs Saudi Arabia)"
-BOUADDI_KEY = "Bouaddi (vs Brasil)"
-INVERTED_WC_PLAYERS = {BENTANCUR_KEY, BOUADDI_KEY}
+SALAH_KEY = "Mohamed Salah"
+INVERTED_WC_PLAYERS = {BENTANCUR_KEY}
 WORLD_CUP_MINUTES = 90.0
 
 BENTANCUR_RAW_DATA = """
@@ -236,6 +235,57 @@ Seta 9: (78.78, 25.30) -> (85.26, 28.78)
 Seta 10: (48.17, 28.50) -> (34.08, 22.20)
 Seta 11: (34.45, 17.69) -> (29.29, 15.16)
 Seta 12: (34.92, 26.15) -> (19.71, 23.42)
+"""
+
+SALAH_RAW_DATA = """
+All Passes – Mohamed Salah
+
+Seta 1: (78.36, 19.6) -> (53.4, 26.24)
+Seta 2: (75.48, 8.72) -> (105.48, 30.56)
+Seta 3: (83.88, 30.08) -> (92.16, 28.0)
+Seta 4: (88.08, 21.44) -> (87.0, 20.32)
+Seta 5: (83.16, 24.4) -> (82.8, 46.8)
+Seta 6: (102.72, 29.84) -> (105.96, 39.2)
+Seta 7: (60.24, 40.0) -> (42.72, 50.32)
+Seta 8: (109.2, 20.48) -> (100.44, 21.76)
+Seta 9: (119.4, 0.4) -> (91.2, 9.44)
+Seta 10: (108.72, 17.2) -> (97.44, 13.84)
+Seta 11: (83.04, 51.52) -> (101.88, 57.52)
+Seta 12: (83.88, 6.88) -> (78.72, 4.4)
+Seta 13: (79.44, 5.44) -> (82.68, 3.92)
+Seta 14: (96.72, 67.68) -> (101.4, 55.12)
+Seta 15: (104.4, 2.96) -> (101.52, 3.44)
+Seta 16: (85.68, 42.0) -> (87.24, 36.32)
+Seta 17: (88.92, 44.0) -> (92.52, 52.8)
+Seta 18: (68.88, 42.0) -> (81.96, 55.36)
+Seta 19: (85.2, 23.12) -> (76.08, 23.36)
+Seta 20: (102.84, 15.28) -> (113.16, 42.16)
+Seta 21: (92.04, 9.04) -> (83.28, 18.08)
+Seta 22: (102.48, 58.24) -> (85.68, 60.4)
+Seta 23: (84.84, 40.08) -> (99.0, 54.24)
+Seta 24: (99.72, 24.4) -> (102.96, 29.2)
+Seta 25: (75.84, 25.76) -> (84.12, 10.48)
+Seta 26: (75.48, 19.04) -> (56.28, 32.48)
+Seta 27: (69.0, 25.28) -> (104.04, 38.72)
+Seta 28: (76.2, 54.24) -> (80.16, 51.04)
+Seta 29: (91.44, 24.08) -> (97.56, 39.28)
+Seta 30: (50.76, 38.96) -> (51.6, 38.56)
+Seta 31: (88.32, 7.36) -> (89.28, 12.88)
+Seta 32: (104.88, 13.6) -> (103.92, 39.68)
+Seta 33: (105.96, 9.92) -> (105.0, 19.04)
+Seta 34: (105.0, 19.12) -> (100.92, 21.76)
+Seta 35: (119.4, 79.6) -> (112.08, 47.44)
+Seta 36: (102.96, 62.08) -> (107.88, 40.24)
+
+Passes Errados
+Seta 1: (75.48, 8.72) -> (105.48, 30.56)
+Seta 2: (88.08, 21.44) -> (87.0, 20.32)
+Seta 3: (102.72, 29.84) -> (105.96, 39.2)
+Seta 4: (102.84, 15.28) -> (113.16, 42.16)
+Seta 5: (99.72, 24.4) -> (102.96, 29.2)
+Seta 6: (69.0, 25.28) -> (104.04, 38.72)
+Seta 7: (50.76, 38.96) -> (51.6, 38.56)
+Seta 8: (104.88, 13.6) -> (103.92, 39.68)
 """
 
 CARD_TITLE_TEXT = "14px"
@@ -902,11 +952,9 @@ def load_all_pass_data() -> tuple[dict, dict]:
     if BENTANCUR_KEY in bentancur_parsed:
         wc_raw[BENTANCUR_KEY] = bentancur_parsed[BENTANCUR_KEY]
 
-    wc_path = Path(WORLD_CUP_DOCX)
-    if wc_path.exists():
-        wc_doc = parse_player_passes_text(read_docx_text(wc_path))
-        if BOUADDI_KEY in wc_doc:
-            wc_raw[BOUADDI_KEY] = wc_doc[BOUADDI_KEY]
+    salah_parsed = parse_player_passes_text(SALAH_RAW_DATA)
+    if SALAH_KEY in salah_parsed:
+        wc_raw[SALAH_KEY] = salah_parsed[SALAH_KEY]
 
     hudson_dfs = {name: events_to_dataframe(events, name) for name, events in hudson_raw.items()}
     wc_dfs = {name: events_to_dataframe(events, name) for name, events in wc_raw.items()}
@@ -1466,7 +1514,7 @@ def draw_pass_delta_scatter(df_v1: pd.DataFrame, df_v2: pd.DataFrame, title: str
 def render_heuristic_v1_v2_comparison(
     hudson_base: pd.DataFrame,
     bentancur_base: pd.DataFrame,
-    bouaddi_base: pd.DataFrame,
+    salah_base: pd.DataFrame,
     prog_model: str,
     hudson_label: str,
 ):
@@ -1499,7 +1547,7 @@ def render_heuristic_v1_v2_comparison(
     bases = [
         ("Hudson Cicala", hudson_base, hudson_label),
         ("Bentancur", bentancur_base, "Copa — vs Arábia Saudita"),
-        ("Bouaddi", bouaddi_base, "Copa — vs Brasil"),
+        ("Mohamed Salah", salah_base, "Mohamed Salah"),
     ]
     impact_rows = []
     for name, base_df, _ in bases:
@@ -1697,10 +1745,10 @@ def render_player_cards(stats: dict, tone: str, prog_model: str):
 # ── DATA LOAD ──────────────────────────────────────────────────
 hudson_dfs, wc_dfs = load_all_pass_data()
 
-if not hudson_dfs or BENTANCUR_KEY not in wc_dfs or BOUADDI_KEY not in wc_dfs:
+if not hudson_dfs or BENTANCUR_KEY not in wc_dfs or SALAH_KEY not in wc_dfs:
     st.error(
-        "Não foi possível carregar os dados. Verifique se os arquivos "
-        f"'{HUDSON_DOCX}' e '{WORLD_CUP_DOCX}' estão no diretório do app."
+        "Não foi possível carregar os dados. Verifique se o arquivo "
+        f"'{HUDSON_DOCX}' está no diretório do app."
     )
     st.stop()
 
@@ -1725,7 +1773,7 @@ st.sidebar.markdown(
     """
     <div style="color:#94a3b8;font-size:0.85rem;line-height:1.5;">
       Comparação de passes por partida.<br>
-      Bentancur e Bouaddi: jogos fixos da Copa do Mundo.<br>
+      Bentancur e Mohamed Salah: jogos fixos da Copa do Mundo.<br>
       Hudson: selecione o jogo na área principal.
     </div>
     """,
@@ -1767,7 +1815,7 @@ st.sidebar.caption("PDF: 3 grades (H / SB / DB) + 3 mapas de diferença normaliz
 
 # ── MAIN LAYOUT ────────────────────────────────────────────────
 st.markdown("## Passes — Comparação de Jogadores")
-st.caption("Hudson Cicala vs Bentancur (vs Arábia Saudita) vs Bouaddi (vs Brasil)")
+st.caption("Hudson Cicala vs Bentancur (vs Arábia Saudita) vs Mohamed Salah")
 
 selected_hudson_match = st.selectbox(
     "Selecione o jogo de Hudson Cicala para comparar",
@@ -1778,11 +1826,11 @@ selected_hudson_match = st.selectbox(
 
 hudson_df = prepare_player_df(hudson_dfs[selected_hudson_match], xt_model, prog_model)
 bentancur_df = prepare_player_df(wc_dfs[BENTANCUR_KEY], xt_model, prog_model)
-bouaddi_df = prepare_player_df(wc_dfs[BOUADDI_KEY], xt_model, prog_model)
+salah_df = prepare_player_df(wc_dfs[SALAH_KEY], xt_model, prog_model)
 
 hudson_stats = compute_stats(hudson_df, selected_hudson_match, prog_model, xt_model)
 bentancur_stats = compute_stats(bentancur_df, BENTANCUR_KEY, prog_model, xt_model)
-bouaddi_stats = compute_stats(bouaddi_df, BOUADDI_KEY, prog_model, xt_model)
+salah_stats = compute_stats(salah_df, SALAH_KEY, prog_model, xt_model)
 
 players = [
     {
@@ -1800,11 +1848,11 @@ players = [
         "tone": PLAYER_TONES["Bentancur"],
     },
     {
-        "name": "Bouaddi",
-        "subtitle": "Copa do Mundo — vs Brasil",
-        "df": bouaddi_df,
-        "stats": bouaddi_stats,
-        "tone": PLAYER_TONES["Bouaddi"],
+        "name": "Mohamed Salah",
+        "subtitle": "Mohamed Salah",
+        "df": salah_df,
+        "stats": salah_stats,
+        "tone": PLAYER_TONES["Mohamed Salah"],
     },
 ]
 
@@ -1835,7 +1883,7 @@ for col, player in zip(stat_cols, players):
 render_heuristic_v1_v2_comparison(
     hudson_dfs[selected_hudson_match],
     wc_dfs[BENTANCUR_KEY],
-    wc_dfs[BOUADDI_KEY],
+    wc_dfs[SALAH_KEY],
     prog_model,
     selected_hudson_match,
 )
