@@ -97,7 +97,7 @@ XT_MODEL_LABELS = {
 XT_MODEL_DESCRIPTIONS = {
     XT_MODEL_HEURISTIC: "Grade sintética normalizada (0–1) por proximidade ao gol.",
     XT_MODEL_HEURISTIC_V2: "Zonas por terço, pico na grande área, progressivo ΔxT >0.15 / >0.35.",
-    XT_MODEL_HEURISTIC_V3: "Terços monotônicos, escala por zona, penalidade lateral suave no ataque.",
+    XT_MODEL_HEURISTIC_V3: "Terços monotônicos, escala por zona, alas com menor xT a partir dos 2/3.",
     XT_MODEL_STATSBOMB: "Markov chain — FA WSL 2019/20, probabilidade de gol por célula.",
     XT_MODEL_DATABALLPY: "Modelo pré-treinado open play (264×196), coords convertidas de StatsBomb.",
 }
@@ -137,9 +137,8 @@ XT_V3_NEG_RECYCLE_X_MAX = 60.0
 XT_V3_MAX_PASS_DELTA = 0.45
 XT_V3_SHORT_PASS_DIST = 5.0
 XT_V3_SHORT_PASS_FACTOR = 0.7
-XT_V3_LAT_DISC_MID = 0.035
-XT_V3_LAT_DISC_ATT = 0.12
-XT_V3_LAT_CURVE_POWER = 1.35
+XT_V3_LAT_DISC_MAX = 0.16
+XT_V3_LAT_CURVE_POWER = 1.0
 
 PROG_MODEL_WYSCOUT = "wyscout"
 PROG_MODEL_OPTA = "opta"
@@ -432,24 +431,24 @@ def apply_progressive_model(
 ) -> pd.DataFrame:
     df = df.copy()
     progressive_flags = []
-    highly_flags = []
+    highly_xt_flags = []
     for row in df.itertuples(index=False):
         if model == PROG_MODEL_WYSCOUT:
             attempt = is_progressive_wyscout(row.x_start, row.y_start, row.x_end, row.y_end)
-            highly = False
         elif model == PROG_MODEL_OPTA:
             attempt = is_progressive_opta(row.x_start, row.y_start, row.x_end, row.y_end)
-            highly = False
         else:
             xt_cat = classify_xt_progressive_for_model(
                 row.xt_start, row.xt_end, row.x_end, row.pass_distance, xt_model,
             )
             attempt = xt_cat in ("progressive", "highly")
-            highly = xt_cat == "highly"
+        xt_cat = classify_xt_progressive_for_model(
+            row.xt_start, row.xt_end, row.x_end, row.pass_distance, xt_model,
+        )
         progressive_flags.append(row.is_won and attempt)
-        highly_flags.append(row.is_won and highly)
+        highly_xt_flags.append(row.is_won and xt_cat == "highly")
     df["progressive"] = progressive_flags
-    df["highly_progressive"] = highly_flags
+    df["highly_progressive"] = highly_xt_flags
     return df
 
 
@@ -639,19 +638,14 @@ def _lateral_relative_position(y: np.ndarray) -> np.ndarray:
 
 
 def _location_factor_v3(x: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Smooth lateral discount: flat in defence, mild in midfield, stronger in attack."""
+    """Lateral discount from attacking 2/3 (x≥40): wings lower than center, smooth & symmetric."""
     lat = _lateral_relative_position(y)
-    mid_t = np.clip(
-        (x - OPT_ATTACKING_TWO_THIRDS_X) / (FINAL_THIRD_LINE_X - OPT_ATTACKING_TWO_THIRDS_X),
+    depth = np.clip(
+        (x - OPT_ATTACKING_TWO_THIRDS_X) / (FIELD_X - OPT_ATTACKING_TWO_THIRDS_X),
         0.0, 1.0,
     )
-    att_t = np.clip(
-        (x - FINAL_THIRD_LINE_X) / (FIELD_X - FINAL_THIRD_LINE_X),
-        0.0, 1.0,
-    )
-    mid_gate = _smoothstep(mid_t) * (1.0 - _smoothstep(att_t))
-    att_gate = _smoothstep(att_t)
-    max_discount = XT_V3_LAT_DISC_MID * mid_gate + XT_V3_LAT_DISC_ATT * att_gate
+    zone_gate = _smoothstep(depth)
+    max_discount = XT_V3_LAT_DISC_MAX * zone_gate
     lateral_curve = _smoothstep(lat ** XT_V3_LAT_CURVE_POWER)
     return 1.0 - max_discount * lateral_curve
 
@@ -1118,6 +1112,7 @@ def compute_stats(
             "progressive_successful": 0,
             "progressive_accuracy_pct": 0.0,
             "highly_progressive": 0,
+            "highly_progressive_pct": 0.0,
             "to_final_third_total": 0,
             "to_final_third_success": 0,
             "to_final_third_accuracy_pct": 0.0,
@@ -1148,6 +1143,7 @@ def compute_stats(
     accuracy = successful / total * 100.0
     progressive_total = int(df["progressive"].sum())
     highly_progressive = int(df["highly_progressive"].sum())
+    highly_progressive_pct = (highly_progressive / successful * 100.0) if successful else 0.0
     progressive_unsuccessful = int(
         (~df["is_won"] & df.apply(lambda r: is_progressive_attempt(r, prog_model, xt_model), axis=1)).sum()
     )
@@ -1192,6 +1188,7 @@ def compute_stats(
         "progressive_attempted": progressive_attempted,
         "progressive_successful": progressive_total,
         "highly_progressive": highly_progressive,
+        "highly_progressive_pct": round(highly_progressive_pct, 1),
         "progressive_accuracy_pct": round(progressive_accuracy, 2),
         "to_final_third_total": to_final_third_total,
         "to_final_third_success": to_final_third_success,
@@ -1352,15 +1349,11 @@ def draw_pass_map(df, prog_model: str = PROG_MODEL_WYSCOUT):
             alpha=alpha,
         )
     legend_handles = [
-        Line2D([0], [0], color=COLOR_SUCCESS, lw=2.0, label="Completed", alpha=0.65),
-        Line2D([0], [0], color=COLOR_PROGRESSIVE, lw=2.0, label="Progressive", alpha=0.90),
-        Line2D([0], [0], color=COLOR_FAIL, lw=2.0, label="Incomplete", alpha=0.90),
+        Line2D([0], [0], color=COLOR_SUCCESS, lw=2.0, label="Completado", alpha=0.65),
+        Line2D([0], [0], color=COLOR_PROGRESSIVE, lw=2.0, label="Progressivo", alpha=0.90),
+        Line2D([0], [0], color=COLOR_HIGHLY_PROGRESSIVE, lw=2.0, label="Super Progressivo", alpha=0.95),
+        Line2D([0], [0], color=COLOR_FAIL, lw=2.0, label="Incompleto", alpha=0.90),
     ]
-    if prog_model == PROG_MODEL_XT:
-        legend_handles.insert(
-            2,
-            Line2D([0], [0], color=COLOR_HIGHLY_PROGRESSIVE, lw=2.0, label="Highly Progressive", alpha=0.95),
-        )
     leg = ax.legend(
         handles=legend_handles,
         loc="upper left",
@@ -1683,7 +1676,7 @@ def render_heuristic_comparison(
     st.caption(
         "v2: pico na grande área (normalização global). "
         "v3: terços monotônicos com escala fixa por zona (def 0–25%, meio 25–60%, ataque 60–100%), "
-        "penalidade lateral suave nas alas (até ~12% no ataque), "
+        "penalidade lateral a partir dos 2/3 ofensivos (até ~16% nas alas), "
         "ΔxT progressivo relativo à posição, teto de 0.45 por passe."
     )
 
@@ -1791,8 +1784,11 @@ def render_heuristic_comparison(
             "% Δ>0 v2": round((won_v2["delta_xt"] > 0).mean() * 100, 1),
             "% Δ>0 v3": round((won_v3["delta_xt"] > 0).mean() * 100, 1),
             "Prog. v1": int(df_v1["progressive"].sum()),
+            "Super v1": int(df_v1["highly_progressive"].sum()),
             "Prog. v2": int(df_v2["progressive"].sum()),
+            "Super v2": int(df_v2["highly_progressive"].sum()),
             "Prog. v3": int(df_v3["progressive"].sum()),
+            "Super v3": int(df_v3["highly_progressive"].sum()),
         })
     st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
@@ -1964,13 +1960,13 @@ def render_player_maps(df: pd.DataFrame, prog_model: str):
 
 def render_player_cards(stats: dict, tone: str, prog_model: str):
     progressive_items = [
-        ("Progressive Passes", f"{stats['progressive_successful']:.0f}"),
-        ("% Progressive Accuracy", f"{stats['progressive_accuracy_pct']:.1f}%"),
+        ("Passes Progressivos", f"{stats['progressive_successful']:.0f}"),
+        ("Super Progressivos", f"{stats['highly_progressive']:.0f}"),
+        ("% Acurácia Progressiva", f"{stats['progressive_accuracy_pct']:.1f}%"),
     ]
     if prog_model == PROG_MODEL_XT:
-        progressive_items.insert(
-            1,
-            ("Highly Progressive", f"{stats['highly_progressive']:.0f}"),
+        progressive_items.append(
+            ("% Altamente Prog. (xT)", f"{stats['highly_progressive_pct']:.1f}%"),
         )
     stats_section_card(
         "Overview",
