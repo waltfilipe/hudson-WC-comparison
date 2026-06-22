@@ -160,8 +160,8 @@ XT_V4_SHORT_PASS_FACTOR = 0.55
 XT_V5_FINE_NX = 96
 XT_V5_FINE_NY = 64
 XT_V5_DISPLAY_SUB = 24
-XT_V5_ZONE_BLEND_WIDTH = 16.0
-XT_V5_SURFACE_SMOOTH_SIGMA = 1.1
+XT_V5_ZONE_BLEND_WIDTH = 26.0
+XT_V5_SURFACE_SMOOTH_SIGMA = 1.85
 XT_V5_SHORT_PASS_DIST = 8.0
 XT_V5_SHORT_PASS_FACTOR = 0.55
 XT_V5_SHORT_PASS_BLEND = 4.0
@@ -189,6 +189,7 @@ HUDSON_DOCX = "Passes - Hudson Cicala.docx"
 BENTANCUR_KEY = "Bentancur (vs Saudi Arabia)"
 VITINHA_KEY = "Vitinha"
 INVERTED_WC_PLAYERS = {BENTANCUR_KEY}
+Y_FLIPPED_WC_PLAYERS = {VITINHA_KEY}
 WORLD_CUP_MINUTES = 90.0
 
 BENTANCUR_RAW_DATA = """
@@ -1027,6 +1028,12 @@ def _smoothstep_scalar(t: float) -> float:
     return t * t * (3.0 - 2.0 * t)
 
 
+def _smootherstep(t: np.ndarray) -> np.ndarray:
+    """Perlin smootherstep — gentler than smoothstep for zone transitions."""
+    t = np.clip(t, 0.0, 1.0)
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+
+
 def _map_zonal_threat_v5_smooth(x: np.ndarray) -> np.ndarray:
     """Blend zone scales with soft weights — no abrupt jumps at x=40 / x=80."""
     blend = XT_V5_ZONE_BLEND_WIDTH
@@ -1039,12 +1046,12 @@ def _map_zonal_threat_v5_smooth(x: np.ndarray) -> np.ndarray:
         (x - FINAL_THIRD_LINE_X) / (FIELD_X - FINAL_THIRD_LINE_X),
         0.0, 1.0,
     )
-    threat_def = XT_V3_DEF_MAX * _smoothstep(def_raw)
-    threat_mid = XT_V3_DEF_MAX + (XT_V3_MID_MAX - XT_V3_DEF_MAX) * _smoothstep(mid_raw)
-    threat_att = XT_V3_MID_MAX + (1.0 - XT_V3_MID_MAX) * _smoothstep(att_raw)
+    threat_def = XT_V3_DEF_MAX * _smootherstep(def_raw)
+    threat_mid = XT_V3_DEF_MAX + (XT_V3_MID_MAX - XT_V3_DEF_MAX) * _smootherstep(mid_raw)
+    threat_att = XT_V3_MID_MAX + (1.0 - XT_V3_MID_MAX) * _smootherstep(att_raw)
 
-    w_def = 1.0 - _smoothstep(np.clip((x - (OPT_ATTACKING_TWO_THIRDS_X - blend)) / blend, 0.0, 1.0))
-    w_att = _smoothstep(np.clip((x - (FINAL_THIRD_LINE_X - blend)) / blend, 0.0, 1.0))
+    w_def = 1.0 - _smootherstep(np.clip((x - (OPT_ATTACKING_TWO_THIRDS_X - blend)) / blend, 0.0, 1.0))
+    w_att = _smootherstep(np.clip((x - (FINAL_THIRD_LINE_X - blend)) / blend, 0.0, 1.0))
     w_mid = np.clip(1.0 - w_def - w_att, 0.0, 1.0)
     w_sum = w_def + w_mid + w_att + 1e-12
     return (w_def * threat_def + w_mid * threat_mid + w_att * threat_att) / w_sum
@@ -1389,6 +1396,11 @@ def invert_pitch_coords(x1: float, y1: float, x2: float, y2: float) -> tuple[flo
     return FIELD_X - x1, FIELD_Y - y1, FIELD_X - x2, FIELD_Y - y2
 
 
+def flip_pitch_y(x1: float, y1: float, x2: float, y2: float) -> tuple[float, float, float, float]:
+    """Mirror coordinates across the pitch center line (swap left/right wings)."""
+    return x1, FIELD_Y - y1, x2, FIELD_Y - y2
+
+
 def _pass_match_distance(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.linalg.norm(a - b) + np.max(np.abs(a - b)))
 
@@ -1443,6 +1455,8 @@ def reconcile_failed_passes(
 
 
 def apply_player_orientation(player: str, x1: float, y1: float, x2: float, y2: float) -> tuple[float, float, float, float]:
+    if player in Y_FLIPPED_WC_PLAYERS:
+        x1, y1, x2, y2 = flip_pitch_y(x1, y1, x2, y2)
     if player in INVERTED_WC_PLAYERS:
         return invert_pitch_coords(x1, y1, x2, y2)
     return x1, y1, x2, y2
@@ -2140,7 +2154,7 @@ def render_heuristic_comparison(
     st.markdown("---")
     st.markdown("### Comparativo gráfico — xT Heurístico v1 / v2 / v3 / v4 / v5")
     st.caption(
-        "v5: transição suave entre zonas + ΔxT ajustado na classificação progressiva "
+        "v5: transição extra-suave entre zonas (blend 26 m, smootherstep) + ΔxT ajustado na classificação "
         "+ teto de ganho por zona (maior na área, menor no campo defensivo)."
     )
 
