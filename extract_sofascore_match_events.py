@@ -30,6 +30,7 @@ import pandas as pd
 DEFAULT_MATCH_URL = (
     "https://www.sofascore.com/football/match/argentina-austria/tUbsuWb#id:15186502"
 )
+API_BASE = "https://api.sofascore.com/api/v1"
 EVENT_CATEGORIES = ("passes", "ball-carries")
 DEFAULT_IMPERSONATE = ("chrome131", "chrome124", "chrome120", "safari184", "edge101")
 
