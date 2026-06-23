@@ -101,7 +101,7 @@ XT_MODEL_LABELS = {
 XT_MODEL_DESCRIPTIONS = {
     XT_MODEL_HEURISTIC: "Grade sintética normalizada (0–1) por proximidade ao gol.",
     XT_MODEL_HEURISTIC_V2: "Zonas por terço, pico na grande área, progressivo ΔxT >0.15 / >0.35.",
-    XT_MODEL_HEURISTIC_V3: "Terços monotônicos, escala por zona, alas com menor xT a partir dos 2/3.",
+    XT_MODEL_HEURISTIC_V3: "Terços com transição suave, finalização xG, monotonicidade, ΔxT coerente.",
     XT_MODEL_HEURISTIC_V4: "v3 + centralidade v1 nos 2/3 + zona de finalização suave (lógica xG).",
     XT_MODEL_HEURISTIC_V5: "v4 + transição suave entre zonas, ΔxT ajustado na classificação, teto por zona.",
     XT_MODEL_STATSBOMB: "Markov chain — FA WSL 2019/20, probabilidade de gol por célula.",
@@ -140,11 +140,9 @@ XT_V3_PRESSURE_ESCAPE_BONUS = 0.02
 XT_V3_PRESSURE_X_MAX = 50.0
 XT_V3_WIDE_FRAC = 0.60
 XT_V3_NEG_RECYCLE_X_MAX = 60.0
-XT_V3_MAX_PASS_DELTA = 0.45
-XT_V3_SHORT_PASS_DIST = 5.0
-XT_V3_SHORT_PASS_FACTOR = 0.7
 XT_V3_LAT_DISC_MAX = 0.16
 XT_V3_LAT_CURVE_POWER = 1.0
+XT_V3_ZONE_BLEND_WIDTH = 14.0
 XT_V4_FINE_NX = 96
 XT_V4_FINE_NY = 64
 XT_V4_DISPLAY_SUB = 24
@@ -157,6 +155,7 @@ XT_V4_CORNER_PENALTY = 0.10
 XT_V4_CENTRAL_PREMIUM = 0.06
 XT_V4_SHORT_PASS_DIST = 8.0
 XT_V4_SHORT_PASS_FACTOR = 0.55
+XT_V4_MAX_PASS_DELTA = 0.45
 XT_V5_FINE_NX = 96
 XT_V5_FINE_NY = 64
 XT_V5_DISPLAY_SUB = 24
@@ -592,14 +591,14 @@ def classify_xt_progressive_for_model(
 ) -> str:
     if xt_model == XT_MODEL_HEURISTIC_V2:
         return classify_xt_progressive_v2(xt_start, xt_end, x_end, pass_distance)
-    if xt_model == XT_MODEL_HEURISTIC_V5:
+    if xt_model in (XT_MODEL_HEURISTIC_V3, XT_MODEL_HEURISTIC_V5):
         return classify_xt_progressive_v5(
             xt_start,
             delta_xt if delta_xt is not None else xt_end - xt_start,
             x_end,
             pass_distance,
         )
-    if xt_model in (XT_MODEL_HEURISTIC_V3, XT_MODEL_HEURISTIC_V4):
+    if xt_model == XT_MODEL_HEURISTIC_V4:
         return classify_xt_progressive_v3(xt_start, xt_end, x_end, pass_distance)
     return classify_xt_progressive(xt_start, xt_end, x_end, pass_distance)
 
@@ -880,72 +879,6 @@ def _location_factor_v3(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     return 1.0 - max_discount * lateral_curve
 
 
-def _build_heuristic_v3_threat_surface(Xc: np.ndarray, Yc: np.ndarray) -> np.ndarray:
-    raw = _zone_x_threat_v3_raw(Xc)
-    return _map_zonal_threat(raw, Xc) * _location_factor_v3(Xc, Yc)
-
-
-@st.cache_data(show_spinner=False)
-def compute_heuristic_v3_fine_grid(nx: int = XT_V3_FINE_NX, ny: int = XT_V3_FINE_NY) -> np.ndarray:
-    """High-resolution lookup grid with zone-based absolute scale (no global min–max)."""
-    xe = np.linspace(0.0, FIELD_X, nx)
-    ye = np.linspace(0.0, FIELD_Y, ny)
-    Xc, Yc = np.meshgrid(xe, ye)
-    return _build_heuristic_v3_threat_surface(Xc, Yc)
-
-
-@st.cache_data(show_spinner=False)
-def compute_heuristic_v3_xt_grid(NX: int = NX_XT, NY: int = NY_XT, sub: int = XT_V3_DISPLAY_SUB) -> np.ndarray:
-    """16×12 display grid via sub-cell averaging (same method as v1)."""
-    ncols_hr = NX * sub
-    nrows_hr = NY * sub
-    xe = np.linspace(0, FIELD_X, ncols_hr + 1)
-    ye = np.linspace(0, FIELD_Y, nrows_hr + 1)
-    xc = (xe[:-1] + xe[1:]) / 2
-    yc_arr = (ye[:-1] + ye[1:]) / 2
-    Xc, Yc = np.meshgrid(xc, yc_arr)
-    threat = _build_heuristic_v3_threat_surface(Xc, Yc)
-    grid = np.zeros((NY, NX))
-    for iy in range(NY):
-        for ix in range(NX):
-            grid[iy, ix] = threat[iy * sub:(iy + 1) * sub, ix * sub:(ix + 1) * sub].mean()
-    return grid
-
-
-def _adjust_heuristic_v3_pass_delta(row) -> float:
-    """v3: capped positive deltas, zone-relative recycle penalty, short-pass discount."""
-    if not row.is_won:
-        return 0.0
-    raw = float(row.xt_end - row.xt_start)
-    if raw >= 0:
-        adjusted = raw
-        if row.pass_distance < XT_V3_SHORT_PASS_DIST:
-            adjusted *= XT_V3_SHORT_PASS_FACTOR
-        return min(adjusted, XT_V3_MAX_PASS_DELTA)
-    lat_start = _lateral_frac(row.y_start)
-    lat_end = _lateral_frac(row.y_end)
-    if row.x_start < XT_V3_NEG_RECYCLE_X_MAX:
-        adjusted = raw * (XT_V3_NEG_PENALTY_FACTOR if lat_end < lat_start else 1.0)
-    else:
-        adjusted = raw
-    if (
-        row.x_start < XT_V3_PRESSURE_X_MAX
-        and lat_start > XT_V3_WIDE_FRAC
-        and lat_end < lat_start - 0.12
-    ):
-        adjusted += XT_V3_PRESSURE_ESCAPE_BONUS
-    return adjusted
-
-
-def apply_heuristic_v3_xt(df: pd.DataFrame) -> pd.DataFrame:
-    fine = compute_heuristic_v3_fine_grid()
-    out = df.copy()
-    out["xt_start"] = out.apply(lambda r: xt_value_bilinear(r["x_start"], r["y_start"], fine), axis=1)
-    out["xt_end"] = out.apply(lambda r: xt_value_bilinear(r["x_end"], r["y_end"], fine), axis=1)
-    out["delta_xt"] = out.apply(_adjust_heuristic_v3_pass_delta, axis=1)
-    return out
-
-
 def _v4_v1_lateral_factor(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """v1-style column weight (0.8 wing / 1.0 center), active only from attacking 2/3 (x≥40)."""
     cent = _centrality(y)
@@ -983,6 +916,125 @@ def _enforce_row_monotonic_x(grid: np.ndarray) -> np.ndarray:
         for ix in range(1, out.shape[1]):
             if out[iy, ix] < out[iy, ix - 1]:
                 out[iy, ix] = out[iy, ix - 1]
+    return out
+
+
+def _map_zonal_threat_v3_smooth(x: np.ndarray) -> np.ndarray:
+    """Blend zone scales with soft weights — lighter than v5 (14 m vs 26 m)."""
+    blend = XT_V3_ZONE_BLEND_WIDTH
+    def_raw = np.clip(x / OPT_ATTACKING_TWO_THIRDS_X, 0.0, 1.0)
+    mid_raw = np.clip(
+        (x - OPT_ATTACKING_TWO_THIRDS_X) / (FINAL_THIRD_LINE_X - OPT_ATTACKING_TWO_THIRDS_X),
+        0.0, 1.0,
+    )
+    att_raw = np.clip(
+        (x - FINAL_THIRD_LINE_X) / (FIELD_X - FINAL_THIRD_LINE_X),
+        0.0, 1.0,
+    )
+    threat_def = XT_V3_DEF_MAX * _smoothstep(def_raw)
+    threat_mid = XT_V3_DEF_MAX + (XT_V3_MID_MAX - XT_V3_DEF_MAX) * _smoothstep(mid_raw)
+    threat_att = XT_V3_MID_MAX + (1.0 - XT_V3_MID_MAX) * _smoothstep(att_raw)
+
+    w_def = 1.0 - _smoothstep(np.clip((x - (OPT_ATTACKING_TWO_THIRDS_X - blend)) / blend, 0.0, 1.0))
+    w_att = _smoothstep(np.clip((x - (FINAL_THIRD_LINE_X - blend)) / blend, 0.0, 1.0))
+    w_mid = np.clip(1.0 - w_def - w_att, 0.0, 1.0)
+    w_sum = w_def + w_mid + w_att + 1e-12
+    return (w_def * threat_def + w_mid * threat_mid + w_att * threat_att) / w_sum
+
+
+def _build_heuristic_v3_threat_surface(Xc: np.ndarray, Yc: np.ndarray) -> np.ndarray:
+    zonal = _map_zonal_threat_v3_smooth(Xc)
+    surface = zonal * _location_factor_v3(Xc, Yc) * _v4_xg_finishing_factor(Xc, Yc)
+    surface = np.clip(surface, 0.0, 1.0)
+    return _enforce_row_monotonic_x(surface)
+
+
+@st.cache_data(show_spinner=False)
+def compute_heuristic_v3_fine_grid(nx: int = XT_V3_FINE_NX, ny: int = XT_V3_FINE_NY) -> np.ndarray:
+    xe = np.linspace(0.0, FIELD_X, nx)
+    ye = np.linspace(0.0, FIELD_Y, ny)
+    Xc, Yc = np.meshgrid(xe, ye)
+    return _build_heuristic_v3_threat_surface(Xc, Yc)
+
+
+@st.cache_data(show_spinner=False)
+def compute_heuristic_v3_xt_grid(NX: int = NX_XT, NY: int = NY_XT, sub: int = XT_V3_DISPLAY_SUB) -> np.ndarray:
+    ncols_hr = NX * sub
+    nrows_hr = NY * sub
+    xe = np.linspace(0, FIELD_X, ncols_hr + 1)
+    ye = np.linspace(0, FIELD_Y, nrows_hr + 1)
+    xc = (xe[:-1] + xe[1:]) / 2
+    yc_arr = (ye[:-1] + ye[1:]) / 2
+    Xc, Yc = np.meshgrid(xc, yc_arr)
+    threat = _build_heuristic_v3_threat_surface(Xc, Yc)
+    grid = np.zeros((NY, NX))
+    for iy in range(NY):
+        for ix in range(NX):
+            grid[iy, ix] = threat[iy * sub:(iy + 1) * sub, ix * sub:(ix + 1) * sub].mean()
+    return _enforce_row_monotonic_x(grid)
+
+
+def _v3_short_pass_multiplier(pass_distance: float) -> float:
+    short_dist = XT_V4_SHORT_PASS_DIST
+    short_factor = XT_V4_SHORT_PASS_FACTOR
+    blend_span = 4.0
+    if pass_distance < short_dist:
+        return short_factor
+    if pass_distance < short_dist + blend_span:
+        blend = (pass_distance - short_dist) / blend_span
+        return short_factor + (1.0 - short_factor) * blend
+    return 1.0
+
+
+def _v3_zone_max_pass_delta(x_start: float) -> float:
+    x = float(np.clip(x_start, 0.0, FIELD_X))
+    control_points = [
+        (0.0, XT_V5_MAX_DELTA_DEF),
+        (OPT_ATTACKING_TWO_THIRDS_X, XT_V5_MAX_DELTA_MID),
+        (FINAL_THIRD_LINE_X, XT_V5_MAX_DELTA_ATT),
+        (XT_V4_BOX_X_START, XT_V5_MAX_DELTA_BOX),
+        (FIELD_X, XT_V5_MAX_DELTA_BOX),
+    ]
+    for idx in range(len(control_points) - 1):
+        x0, cap0 = control_points[idx]
+        x1, cap1 = control_points[idx + 1]
+        if x <= x1:
+            if x1 <= x0:
+                return cap1
+            t = float(_smoothstep(np.array([(x - x0) / (x1 - x0)]))[0])
+            return cap0 + (cap1 - cap0) * t
+    return control_points[-1][1]
+
+
+def _adjust_heuristic_v3_pass_delta(row) -> float:
+    """v3: smooth short-pass discount, zone cap, recycle rules."""
+    if not row.is_won:
+        return 0.0
+    raw = float(row.xt_end - row.xt_start)
+    if raw >= 0:
+        adjusted = raw * _v3_short_pass_multiplier(row.pass_distance)
+        return min(adjusted, _v3_zone_max_pass_delta(row.x_start))
+    lat_start = _lateral_frac(row.y_start)
+    lat_end = _lateral_frac(row.y_end)
+    if row.x_start < XT_V3_NEG_RECYCLE_X_MAX:
+        adjusted = raw * (XT_V3_NEG_PENALTY_FACTOR if lat_end < lat_start else 1.0)
+    else:
+        adjusted = raw
+    if (
+        row.x_start < XT_V3_PRESSURE_X_MAX
+        and lat_start > XT_V3_WIDE_FRAC
+        and lat_end < lat_start - 0.12
+    ):
+        adjusted += XT_V3_PRESSURE_ESCAPE_BONUS
+    return adjusted
+
+
+def apply_heuristic_v3_xt(df: pd.DataFrame) -> pd.DataFrame:
+    fine = compute_heuristic_v3_fine_grid()
+    out = df.copy()
+    out["xt_start"] = out.apply(lambda r: xt_value_bilinear(r["x_start"], r["y_start"], fine), axis=1)
+    out["xt_end"] = out.apply(lambda r: xt_value_bilinear(r["x_end"], r["y_end"], fine), axis=1)
+    out["delta_xt"] = out.apply(_adjust_heuristic_v3_pass_delta, axis=1)
     return out
 
 
@@ -1032,7 +1084,7 @@ def _adjust_heuristic_v4_pass_delta(row) -> float:
         elif row.pass_distance < short_dist + 4.0:
             blend = (row.pass_distance - short_dist) / 4.0
             adjusted *= short_factor + (1.0 - short_factor) * blend
-        return min(adjusted, XT_V3_MAX_PASS_DELTA)
+        return min(adjusted, XT_V4_MAX_PASS_DELTA)
     lat_start = _lateral_frac(row.y_start)
     lat_end = _lateral_frac(row.y_end)
     if row.x_start < XT_V3_NEG_RECYCLE_X_MAX:
@@ -2725,7 +2777,7 @@ def build_xt_comparison_pdf() -> bytes:
     c.showPage()
 
     _draw_page_header(
-        "Evolução heurística v1 → v2 → v3 | v3: escala fixa por terço, monotônico no ataque",
+        "Evolução heurística v1 → v2 → v3 | v3: transição suave, finalização xG, monotonicidade",
     )
     _pdf_draw_image_row(
         c, heuristic_panels[:3], page_w, page_h,
