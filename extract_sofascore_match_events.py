@@ -114,14 +114,6 @@ def flatten_category_events(
     return rows
 
 
-def _first_present(record: dict[str, Any], *keys: str) -> Any:
-    for key in keys:
-        value = record.get(key)
-        if value is not None and value != "":
-            return value
-    return None
-
-
 def players_from_lineups(lineups: dict[str, Any], team_names: dict[str, str] | None = None) -> list[PlayerInfo]:
     team_names = team_names or {}
     players: list[PlayerInfo] = []
@@ -146,6 +138,94 @@ def players_from_lineups(lineups: dict[str, Any], team_names: dict[str, str] | N
                 )
             )
     return players
+
+
+def _first_present(record: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = record.get(key)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _extract_json_text(raw_text: str) -> str:
+    text = raw_text.strip().lstrip("\ufeff")
+    if not text:
+        raise ValueError("arquivo vazio")
+
+    if text.startswith("{") or text.startswith("["):
+        return text
+
+    if "<pre" in text.lower():
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(text, "html.parser")
+        pre = soup.find("pre")
+        if pre and pre.get_text(strip=True):
+            return pre.get_text()
+
+    match = re.search(r"(\{.*\})", text, flags=re.DOTALL)
+    if match:
+        return match.group(1)
+
+    raise ValueError("não encontrei JSON válido no arquivo")
+
+
+def _normalize_lineups_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("o JSON precisa ser um objeto com as chaves 'home' e 'away'")
+
+    if "home" in payload and "away" in payload:
+        return payload
+
+    for key in ("lineups", "data", "response"):
+        nested = payload.get(key)
+        if isinstance(nested, dict) and "home" in nested and "away" in nested:
+            return nested
+
+    raise ValueError(
+        "formato inválido: esperado {'home': {'players': [...]}, 'away': {'players': [...]}}"
+    )
+
+
+def load_lineups_file(lineups_file: Path, base_dir: Path | None = None) -> dict[str, Any]:
+    path = Path(lineups_file)
+    if not path.is_absolute() and base_dir is not None:
+        candidate = base_dir / path
+        if candidate.exists():
+            path = candidate
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Arquivo não encontrado: {path}\n"
+            "Salve o JSON na mesma pasta do notebook/script ou informe o caminho completo."
+        )
+
+    raw_text = path.read_text(encoding="utf-8")
+    if not raw_text.strip():
+        raise ValueError(
+            f"O arquivo está vazio: {path}\n"
+            "Exporte novamente pelo DevTools (veja instruções no notebook)."
+        )
+
+    try:
+        json_text = _extract_json_text(raw_text)
+        payload = json.loads(json_text)
+    except json.JSONDecodeError as exc:
+        preview = raw_text[:120].replace("\n", " ")
+        raise ValueError(
+            f"JSON inválido em {path}: {exc}\n"
+            f"Início do arquivo: {preview!r}\n"
+            "Você provavelmente salvou HTML ou copiou texto errado. "
+            "Use DevTools → Network → lineups → Response → Copy response."
+        ) from exc
+
+    lineups = _normalize_lineups_payload(payload)
+    if not players_from_lineups(lineups):
+        raise ValueError(
+            f"O arquivo {path} foi lido, mas não contém jogadores em home/away.players."
+        )
+    return lineups
 
 
 def _is_access_denied(exc: BaseException) -> bool:
@@ -443,7 +523,7 @@ def extract_match_events(
 
     try:
         if lineups_file:
-            lineups = json.loads(lineups_file.read_text(encoding="utf-8"))
+            lineups = load_lineups_file(lineups_file, base_dir=output_dir.parent)
             team_names = {}
         else:
             client, client_label = create_working_client(mode, match_url, match_id, delay=delay)

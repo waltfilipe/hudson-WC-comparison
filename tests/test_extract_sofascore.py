@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT))
 
 from extract_sofascore_match_events import (  # noqa: E402
     flatten_category_events,
+    load_lineups_file,
     parse_match_id,
     players_from_lineups,
     PlayerInfo,
@@ -57,8 +58,15 @@ def test_flatten_passes_and_carries():
     assert set(all_df["category"]) == {"passes", "ball-carries"}
 
 
+def test_load_lineups_file():
+    lineups = load_lineups_file(ROOT / "tests/fixtures/sofascore_lineups_sample.json")
+    assert "home" in lineups and "away" in lineups
+    assert len(players_from_lineups(lineups)) == 2
+
+
 if __name__ == "__main__":
     test_parse_match_id_from_hash()
     test_players_from_lineups()
     test_flatten_passes_and_carries()
+    test_load_lineups_file()
     print("ok")
