@@ -101,7 +101,7 @@ XT_MODEL_LABELS = {
 XT_MODEL_DESCRIPTIONS = {
     XT_MODEL_HEURISTIC: "Grade sintética normalizada (0–1) por proximidade ao gol.",
     XT_MODEL_HEURISTIC_V2: "Zonas por terço, pico na grande área, progressivo ΔxT >0.15 / >0.35.",
-    XT_MODEL_HEURISTIC_V3: "Terços com transição suave, finalização xG, monotonicidade, ΔxT coerente.",
+    XT_MODEL_HEURISTIC_V3: "Terços contínuos (escala absoluta), transição suave 22 m, classificação rígida.",
     XT_MODEL_HEURISTIC_V4: "v3 + centralidade v1 nos 2/3 + zona de finalização suave (lógica xG).",
     XT_MODEL_HEURISTIC_V5: "v4 + transição suave entre zonas, ΔxT ajustado na classificação, teto por zona.",
     XT_MODEL_STATSBOMB: "Markov chain — FA WSL 2019/20, probabilidade de gol por célula.",
@@ -131,10 +131,17 @@ XT_V3_FINE_NY = 64
 XT_V3_DISPLAY_SUB = 24
 XT_V3_DEF_MAX = 0.25
 XT_V3_MID_MAX = 0.60
+XT_V3_ATT_BYLINE = 0.94
+XT_V3_SURFACE_MAX = 1.02
 XT_V3_PROG_SCALE = 0.15
 XT_V3_HIGH_SCALE = 0.35
 XT_V3_PROG_FLOOR = 0.08
 XT_V3_HIGH_FLOOR = 0.18
+XT_V3_PROG_SCALE_CLASS = 0.17
+XT_V3_HIGH_SCALE_CLASS = 0.40
+XT_V3_PROG_FLOOR_CLASS = 0.10
+XT_V3_HIGH_FLOOR_CLASS = 0.22
+XT_V3_MIN_PASS_DISTANCE = 10.5
 XT_V3_NEG_PENALTY_FACTOR = 0.55
 XT_V3_PRESSURE_ESCAPE_BONUS = 0.02
 XT_V3_PRESSURE_X_MAX = 50.0
@@ -142,7 +149,7 @@ XT_V3_WIDE_FRAC = 0.60
 XT_V3_NEG_RECYCLE_X_MAX = 60.0
 XT_V3_LAT_DISC_MAX = 0.16
 XT_V3_LAT_CURVE_POWER = 1.0
-XT_V3_ZONE_BLEND_WIDTH = 14.0
+XT_V3_ZONE_BLEND_WIDTH = 22.0
 XT_V4_FINE_NX = 96
 XT_V4_FINE_NY = 64
 XT_V4_DISPLAY_SUB = 24
@@ -561,6 +568,26 @@ def classify_xt_progressive_v4(
     return classify_xt_progressive_v3(xt_start, xt_end, x_end, pass_distance)
 
 
+def classify_xt_progressive_v3_adjusted(
+    xt_start: float,
+    delta_xt: float,
+    x_end: float,
+    pass_distance: float,
+) -> str:
+    """v3: stricter progressive labels on adjusted ΔxT."""
+    if pass_distance <= XT_V3_MIN_PASS_DISTANCE:
+        return "none"
+    if delta_xt <= 0:
+        return "none"
+    prog_thresh = max(XT_V3_PROG_FLOOR_CLASS, XT_V3_PROG_SCALE_CLASS * (1.0 - xt_start))
+    high_thresh = max(XT_V3_HIGH_FLOOR_CLASS, XT_V3_HIGH_SCALE_CLASS * (1.0 - xt_start))
+    if delta_xt <= prog_thresh:
+        return "none"
+    if delta_xt > high_thresh:
+        return "highly"
+    return "progressive"
+
+
 def classify_xt_progressive_v5(
     xt_start: float,
     delta_xt: float,
@@ -591,7 +618,14 @@ def classify_xt_progressive_for_model(
 ) -> str:
     if xt_model == XT_MODEL_HEURISTIC_V2:
         return classify_xt_progressive_v2(xt_start, xt_end, x_end, pass_distance)
-    if xt_model in (XT_MODEL_HEURISTIC_V3, XT_MODEL_HEURISTIC_V5):
+    if xt_model == XT_MODEL_HEURISTIC_V3:
+        return classify_xt_progressive_v3_adjusted(
+            xt_start,
+            delta_xt if delta_xt is not None else xt_end - xt_start,
+            x_end,
+            pass_distance,
+        )
+    if xt_model == XT_MODEL_HEURISTIC_V5:
         return classify_xt_progressive_v5(
             xt_start,
             delta_xt if delta_xt is not None else xt_end - xt_start,
@@ -721,6 +755,12 @@ def compute_heuristic_xt_grid(NX=16, NY=12, sub=24):
 def _smoothstep(t: np.ndarray) -> np.ndarray:
     t = np.clip(t, 0.0, 1.0)
     return t * t * (3.0 - 2.0 * t)
+
+
+def _smootherstep(t: np.ndarray) -> np.ndarray:
+    """Perlin smootherstep — gentler than smoothstep for zone transitions."""
+    t = np.clip(t, 0.0, 1.0)
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 
 
 def _zone_x_threat(x: np.ndarray) -> np.ndarray:
@@ -920,23 +960,20 @@ def _enforce_row_monotonic_x(grid: np.ndarray) -> np.ndarray:
 
 
 def _map_zonal_threat_v3_smooth(x: np.ndarray) -> np.ndarray:
-    """Blend zone scales with soft weights — lighter than v5 (14 m vs 26 m)."""
+    """Continuous absolute threat with soft third blending — no per-zone 0→1 remap."""
     blend = XT_V3_ZONE_BLEND_WIDTH
-    def_raw = np.clip(x / OPT_ATTACKING_TWO_THIRDS_X, 0.0, 1.0)
-    mid_raw = np.clip(
-        (x - OPT_ATTACKING_TWO_THIRDS_X) / (FINAL_THIRD_LINE_X - OPT_ATTACKING_TWO_THIRDS_X),
-        0.0, 1.0,
-    )
-    att_raw = np.clip(
-        (x - FINAL_THIRD_LINE_X) / (FIELD_X - FINAL_THIRD_LINE_X),
-        0.0, 1.0,
-    )
-    threat_def = XT_V3_DEF_MAX * _smoothstep(def_raw)
-    threat_mid = XT_V3_DEF_MAX + (XT_V3_MID_MAX - XT_V3_DEF_MAX) * _smoothstep(mid_raw)
-    threat_att = XT_V3_MID_MAX + (1.0 - XT_V3_MID_MAX) * _smoothstep(att_raw)
+    x = np.clip(x, 0.0, FIELD_X)
 
-    w_def = 1.0 - _smoothstep(np.clip((x - (OPT_ATTACKING_TWO_THIRDS_X - blend)) / blend, 0.0, 1.0))
-    w_att = _smoothstep(np.clip((x - (FINAL_THIRD_LINE_X - blend)) / blend, 0.0, 1.0))
+    threat_def = XT_V3_DEF_MAX * np.clip(x / OPT_ATTACKING_TWO_THIRDS_X, 0.0, 1.0)
+    mid_span = max(FINAL_THIRD_LINE_X - OPT_ATTACKING_TWO_THIRDS_X, 1.0)
+    mid_t = np.clip((x - OPT_ATTACKING_TWO_THIRDS_X) / mid_span, 0.0, 1.0)
+    threat_mid = XT_V3_DEF_MAX + (XT_V3_MID_MAX - XT_V3_DEF_MAX) * _smootherstep(mid_t)
+    att_span = max(FIELD_X - FINAL_THIRD_LINE_X, 1.0)
+    att_t = np.clip((x - FINAL_THIRD_LINE_X) / att_span, 0.0, 1.0)
+    threat_att = XT_V3_MID_MAX + (XT_V3_ATT_BYLINE - XT_V3_MID_MAX) * _smootherstep(att_t)
+
+    w_def = 1.0 - _smootherstep(np.clip((x - (OPT_ATTACKING_TWO_THIRDS_X - blend)) / blend, 0.0, 1.0))
+    w_att = _smootherstep(np.clip((x - (FINAL_THIRD_LINE_X - blend)) / blend, 0.0, 1.0))
     w_mid = np.clip(1.0 - w_def - w_att, 0.0, 1.0)
     w_sum = w_def + w_mid + w_att + 1e-12
     return (w_def * threat_def + w_mid * threat_mid + w_att * threat_att) / w_sum
@@ -945,7 +982,7 @@ def _map_zonal_threat_v3_smooth(x: np.ndarray) -> np.ndarray:
 def _build_heuristic_v3_threat_surface(Xc: np.ndarray, Yc: np.ndarray) -> np.ndarray:
     zonal = _map_zonal_threat_v3_smooth(Xc)
     surface = zonal * _location_factor_v3(Xc, Yc) * _v4_xg_finishing_factor(Xc, Yc)
-    surface = np.clip(surface, 0.0, 1.0)
+    surface = np.clip(surface, 0.0, XT_V3_SURFACE_MAX)
     return _enforce_row_monotonic_x(surface)
 
 
@@ -1112,12 +1149,6 @@ def apply_heuristic_v4_xt(df: pd.DataFrame) -> pd.DataFrame:
 def _smoothstep_scalar(t: float) -> float:
     t = float(np.clip(t, 0.0, 1.0))
     return t * t * (3.0 - 2.0 * t)
-
-
-def _smootherstep(t: np.ndarray) -> np.ndarray:
-    """Perlin smootherstep — gentler than smoothstep for zone transitions."""
-    t = np.clip(t, 0.0, 1.0)
-    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 
 
 def _map_zonal_threat_v5_smooth(x: np.ndarray) -> np.ndarray:
@@ -2777,7 +2808,7 @@ def build_xt_comparison_pdf() -> bytes:
     c.showPage()
 
     _draw_page_header(
-        "Evolução heurística v1 → v2 → v3 | v3: transição suave, finalização xG, monotonicidade",
+        "Evolução heurística v1 → v2 → v3 | v3: escala absoluta, transição 22 m, classificação rígida",
     )
     _pdf_draw_image_row(
         c, heuristic_panels[:3], page_w, page_h,
