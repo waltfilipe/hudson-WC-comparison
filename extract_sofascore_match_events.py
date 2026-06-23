@@ -31,6 +31,10 @@ DEFAULT_MATCH_URL = (
     "https://www.sofascore.com/football/match/argentina-austria/tUbsuWb#id:15186502"
 )
 API_BASE = "https://api.sofascore.com/api/v1"
+API_BASES = (
+    "https://www.sofascore.com/api/v1",
+    "https://api.sofascore.com/api/v1",
+)
 EVENT_CATEGORIES = ("passes", "ball-carries")
 DEFAULT_IMPERSONATE = ("chrome131", "chrome124", "chrome120", "safari184", "edge101")
 
@@ -144,6 +148,41 @@ def players_from_lineups(lineups: dict[str, Any], team_names: dict[str, str] | N
     return players
 
 
+def _is_access_denied(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "403" in text or "forbidden" in text or "challenge" in text
+
+
+def _chrome_major_version() -> int | None:
+    import re
+    import subprocess
+
+    if sys.platform == "win32":
+        commands = [
+            ["reg", "query", r"HKEY_CURRENT_USER\Software\Google\Chrome\BLBeacon", "/v", "version"],
+            ["reg", "query", r"HKEY_LOCAL_MACHINE\SOFTWARE\Google\Chrome\BLBeacon", "/v", "version"],
+        ]
+    elif sys.platform == "darwin":
+        commands = [["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "--version"]]
+    else:
+        commands = [
+            ["google-chrome", "--version"],
+            ["google-chrome-stable", "--version"],
+            ["chromium", "--version"],
+            ["chromium-browser", "--version"],
+        ]
+
+    for command in commands:
+        try:
+            output = subprocess.run(command, capture_output=True, text=True, timeout=5).stdout
+            match = re.search(r"(\d+)\.", output)
+            if match:
+                return int(match.group(1))
+        except Exception:
+            continue
+    return None
+
+
 class CurlCffiClient:
     def __init__(self, match_url: str, match_id: int, delay: float = 0.8) -> None:
         from curl_cffi import requests
@@ -211,22 +250,34 @@ class CurlCffiClient:
 class BrowserClient:
     """Fallback com Chrome real (undetected-chromedriver), útil quando curl_cffi recebe 403."""
 
-    def __init__(self, match_url: str, match_id: int, delay: float = 1.5) -> None:
+    def __init__(
+        self,
+        match_url: str,
+        match_id: int,
+        delay: float = 1.5,
+        *,
+        headless: bool = True,
+    ) -> None:
         import undetected_chromedriver as uc
-        from bs4 import BeautifulSoup
 
         self.match_id = match_id
         self.match_url = match_url
         self.delay = delay
-        self._BeautifulSoup = BeautifulSoup
+        self.headless = headless
 
         options = uc.ChromeOptions()
-        options.add_argument("--headless=new")
+        if headless:
+            options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--window-size=1440,900")
 
-        self.driver = uc.Chrome(options=options)
+        chrome_version = _chrome_major_version()
+        self.driver = uc.Chrome(
+            options=options,
+            version_main=chrome_version,
+        )
         self.driver.get(self.match_url)
         time.sleep(self.delay)
 
@@ -234,13 +285,60 @@ class BrowserClient:
         self.driver.quit()
 
     def get_json(self, path: str) -> dict[str, Any]:
-        url = f"{API_BASE}/{path.lstrip('/')}"
-        self.driver.get(url)
-        time.sleep(self.delay)
-        text = self._BeautifulSoup(self.driver.page_source, "html.parser").get_text()
-        payload = json.loads(text)
-        if isinstance(payload, dict) and payload.get("error"):
-            raise RuntimeError(f"Erro da API em {url}: {payload['error']}")
+        rel_path = path.lstrip("/")
+        last_error: Exception | None = None
+
+        for base in API_BASES:
+            url = f"{base}/{rel_path}"
+            try:
+                payload = self._fetch_via_browser(url)
+                if isinstance(payload, dict) and payload.get("error"):
+                    error = payload["error"]
+                    if error.get("code") == 403:
+                        last_error = RuntimeError(f"403 Forbidden em {url}: {error}")
+                        continue
+                    raise RuntimeError(f"Erro da API em {url}: {error}")
+                time.sleep(self.delay)
+                return payload
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+
+        raise RuntimeError(f"Falha ao acessar {rel_path} via browser") from last_error
+
+    def _fetch_via_browser(self, url: str) -> dict[str, Any]:
+        script = """
+        const url = arguments[0];
+        const done = arguments[arguments.length - 1];
+        fetch(url, {
+            method: 'GET',
+            credentials: 'include',
+            headers: {
+                'Accept': 'application/json, text/plain, */*',
+            },
+        })
+        .then(async (response) => {
+            let data = null;
+            try {
+                data = await response.json();
+            } catch (error) {
+                data = {error: {message: 'invalid json', status: response.status}};
+            }
+            done({ok: response.ok, status: response.status, data});
+        })
+        .catch((error) => done({ok: false, status: 0, data: {error: {message: String(error)}}}));
+        """
+        result = self.driver.execute_async_script(script, url)
+        if not isinstance(result, dict):
+            raise RuntimeError(f"Resposta inesperada do browser para {url}")
+
+        status = result.get("status", 0)
+        payload = result.get("data", {})
+        if status == 403 or (isinstance(payload, dict) and payload.get("error", {}).get("code") == 403):
+            raise RuntimeError(f"403 Forbidden em {url}")
+        if not result.get("ok"):
+            raise RuntimeError(f"HTTP {status} em {url}: {payload}")
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"JSON inválido em {url}")
         return payload
 
     def get_lineups(self) -> dict[str, Any]:
@@ -253,16 +351,62 @@ class BrowserClient:
         return self.get_json(f"event/{self.match_id}/player/{player_id}/rating-breakdown")
 
 
-def build_client(mode: str, match_url: str, match_id: int, delay: float):
-    if mode == "browser":
-        return BrowserClient(match_url, match_id, delay=delay)
+def create_working_client(
+    mode: str,
+    match_url: str,
+    match_id: int,
+    delay: float,
+) -> tuple[Any, str]:
+    """Tenta curl e/ou Chrome até conseguir acessar a API."""
+    attempts: list[tuple[str, dict[str, Any]]] = []
 
-    try:
-        return CurlCffiClient(match_url, match_id, delay=delay)
-    except Exception:
-        if mode == "curl":
-            raise
-        return BrowserClient(match_url, match_id, delay=delay)
+    if mode == "curl":
+        attempts.append(("curl", {}))
+    elif mode == "browser":
+        attempts.append(("browser-headless", {"headless": True}))
+        attempts.append(("browser-visible", {"headless": False}))
+    else:
+        attempts.extend(
+            [
+                ("curl", {}),
+                ("browser-headless", {"headless": True}),
+                ("browser-visible", {"headless": False}),
+            ]
+        )
+
+    last_error: Exception | None = None
+    for label, options in attempts:
+        client = None
+        try:
+            if label == "curl":
+                client = CurlCffiClient(match_url, match_id, delay=delay)
+            else:
+                client = BrowserClient(match_url, match_id, delay=delay, **options)
+            client.get_event()
+            print(f"Conectado via {label}")
+            return client, label
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            print(f"Modo {label} falhou: {exc}")
+            if client is not None and hasattr(client, "close"):
+                client.close()
+            if mode in {"curl", "browser"}:
+                break
+            if mode == "auto" and label == "curl" and not _is_access_denied(exc):
+                break
+
+    raise RuntimeError(
+        "Não foi possível acessar a API do SofaScore (403).\n"
+        "Tente:\n"
+        "  1) MODE = 'browser' no notebook (abre o Chrome)\n"
+        "  2) Instalar/atualizar o Google Chrome\n"
+        "  3) Exportar lineups.json no DevTools e usar --lineups"
+    ) from last_error
+
+
+def build_client(mode: str, match_url: str, match_id: int, delay: float):
+    client, _ = create_working_client(mode, match_url, match_id, delay)
+    return client
 
 
 def team_names_from_event(event_payload: dict[str, Any]) -> dict[str, str]:
@@ -294,15 +438,16 @@ def extract_match_events(
         raw_dir.mkdir(parents=True, exist_ok=True)
 
     client = None
-    browser_client = isinstance(mode, str) and mode == "browser"
+    client_label = mode
+    browser_client = False
 
     try:
         if lineups_file:
             lineups = json.loads(lineups_file.read_text(encoding="utf-8"))
             team_names = {}
         else:
-            client = build_client(mode, match_url, match_id, delay=delay)
-            browser_client = isinstance(client, BrowserClient)
+            client, client_label = create_working_client(mode, match_url, match_id, delay=delay)
+            browser_client = client_label.startswith("browser")
             event_payload = client.get_event()
             team_names = team_names_from_event(event_payload)
             lineups = client.get_lineups()
@@ -328,8 +473,8 @@ def extract_match_events(
         pd.DataFrame(lineup_rows).to_csv(output_dir / "lineups.csv", index=False)
 
         if client is None:
-            client = build_client(mode, match_url, match_id, delay=delay)
-            browser_client = isinstance(client, BrowserClient)
+            client, client_label = create_working_client(mode, match_url, match_id, delay=delay)
+            browser_client = client_label.startswith("browser")
 
         all_rows: list[dict[str, Any]] = []
         selected_categories = tuple(categories)
