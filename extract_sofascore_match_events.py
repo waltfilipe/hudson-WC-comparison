@@ -27,7 +27,9 @@ from urllib.parse import urlparse
 
 import pandas as pd
 
-API_BASE = "https://api.sofascore.com/api/v1"
+DEFAULT_MATCH_URL = (
+    "https://www.sofascore.com/football/match/argentina-austria/tUbsuWb#id:15186502"
+)
 EVENT_CATEGORIES = ("passes", "ball-carries")
 DEFAULT_IMPERSONATE = ("chrome131", "chrome124", "chrome120", "safari184", "edge101")
 
@@ -444,8 +446,27 @@ def main(argv: list[str] | None = None) -> int:
     match_ref = args.match
     if args.match_id is not None:
         match_ref = str(args.match_id)
+
     if not match_ref:
-        parser.error("Informe a URL da partida ou --match-id")
+        if sys.stdin.isatty():
+            print("Nenhuma partida informada.")
+            print(f"Exemplo de URL:\n  {DEFAULT_MATCH_URL}\n")
+            try:
+                match_ref = input("Cole a URL da partida (ou match id) e pressione Enter: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nCancelado.")
+                return 1
+
+    if not match_ref:
+        parser.print_help()
+        print(
+            "\nErro: informe a URL da partida ou --match-id.\n"
+            "\nNo terminal:\n"
+            f'  python extract_sofascore_match_events.py "{DEFAULT_MATCH_URL}" -o argentina_austria\n'
+            "\nNo VS Code: use o Terminal integrado com o comando acima, "
+            "ou execute a configuração de debug \"SofaScore: extrair partida\"."
+        )
+        return 2
 
     try:
         extract_match_events(
@@ -464,4 +485,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
