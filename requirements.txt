@@ -11,3 +11,7 @@ reportlab
 openpyxl
 html2image
 databallpy
+curl_cffi
+undetected-chromedriver
+selenium
+beautifulsoup4

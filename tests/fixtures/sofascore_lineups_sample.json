@@ -1,0 +1,32 @@
+{
+  "home": {
+    "team": { "name": "Argentina" },
+    "players": [
+      {
+        "player": {
+          "id": 12994,
+          "name": "Lionel Messi",
+          "shortName": "L. Messi",
+          "position": "F"
+        },
+        "shirtNumber": 10,
+        "substitute": false
+      }
+    ]
+  },
+  "away": {
+    "team": { "name": "Austria" },
+    "players": [
+      {
+        "player": {
+          "id": 99652,
+          "name": "David Alaba",
+          "shortName": "D. Alaba",
+          "position": "D"
+        },
+        "shirtNumber": 8,
+        "substitute": false
+      }
+    ]
+  }
+}
