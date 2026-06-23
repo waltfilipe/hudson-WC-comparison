@@ -1,7 +1,7 @@
 import re
 import os
 from pathlib import Path
-from io import BytesIO
+from io import BytesIO, StringIO
 
 import streamlit as st
 import matplotlib
@@ -74,7 +74,7 @@ ALPHA_SUCCESS = 0.07
 PASS_TONES = ["#5b9bd5", "#3b82f6", "#1d4ed8"]
 PLAYER_TONES = {
     "Hudson Cicala": "#5b9bd5",
-    "Bentancur": "#70ad47",
+    "Rodri": "#e67e22",
     "Vitinha": "#d4a843",
 }
 CMAP_TOP10 = LinearSegmentedColormap.from_list("top10", ["#fef08a", "#f97316", "#b91c1c"])
@@ -178,10 +178,10 @@ XT_V5_MAX_DELTA_BOX = 0.52
 XT_V5_DELTA_CAP_BLEND = 12.0
 
 PASS_MAP_FILTER_ALL = "all"
-PASS_MAP_FILTER_SUPER = "super"
+PASS_MAP_FILTER_HIGH_IMPACT = "high_impact"
 PASS_MAP_FILTER_LABELS = {
     PASS_MAP_FILTER_ALL: "Todos os passes",
-    PASS_MAP_FILTER_SUPER: "Somente super progressivos",
+    PASS_MAP_FILTER_HIGH_IMPACT: "Somente High Impact Passes",
 }
 
 PROG_MODEL_WYSCOUT = "wyscout"
@@ -200,111 +200,12 @@ PROG_MODEL_DESCRIPTIONS = {
 
 HUDSON_DOCX = "Passes - Hudson Cicala.docx"
 HUDSON_ALL_MATCHES_KEY = "__hudson_all_matches__"
-BENTANCUR_KEY = "Bentancur (vs Saudi Arabia)"
+RODRI_KEY = "Rodri (vs Saudi Arabia)"
 VITINHA_KEY = "Vitinha"
-INVERTED_WC_PLAYERS = {BENTANCUR_KEY}
 Y_FLIPPED_WC_PLAYERS = {VITINHA_KEY}
 WORLD_CUP_MINUTES = 90.0
-
-BENTANCUR_RAW_DATA = """
-All Passes – Bentancur (vs Saudi Arabia)
-
-Seta 1: (55.02, 27.93) -> (42.16, 25.77)
-Seta 2: (32.29, 46.06) -> (33.70, 59.96)
-Seta 3: (48.26, 47.65) -> (65.82, 43.05)
-Seta 4: (46.01, 58.08) -> (35.49, 57.33)
-Seta 5: (47.32, 59.21) -> (56.90, 58.36)
-Seta 6: (46.29, 59.49) -> (56.06, 76.11)
-Seta 7: (69.67, 60.80) -> (74.09, 61.74)
-Seta 8: (63.29, 42.96) -> (49.76, 75.36)
-Seta 9: (62.91, 23.52) -> (69.77, 27.46)
-Seta 10: (72.96, 17.98) -> (61.88, 15.16)
-Seta 1: (12.10, 19.57) -> (3.27, 48.69)
-Seta 2: (34.45, 24.27) -> (27.60, 19.29)
-Seta 3: (62.07, 10.37) -> (76.53, 4.55)
-Seta 4: (62.82, 43.52) -> (65.17, 57.61)
-Seta 5: (67.42, 33.94) -> (68.73, 37.79)
-Seta 6: (66.95, 26.62) -> (60.19, 36.29)
-Seta 7: (69.96, 36.76) -> (70.61, 26.24)
-Seta 8: (69.86, 48.88) -> (88.36, 36.38)
-Seta 9: (71.27, 45.96) -> (72.40, 65.40)
-Seta 10: (75.12, 32.16) -> (75.78, 18.82)
-Seta 11: (79.07, 27.93) -> (85.92, 32.06)
-Seta 1: (32.01, 25.49) -> (35.21, 43.90)
-Seta 2: (41.69, 58.92) -> (27.97, 56.29)
-Seta 3: (51.45, 30.94) -> (35.02, 25.68)
-Seta 4: (69.11, 50.85) -> (74.56, 32.72)
-Seta 5: (73.81, 39.20) -> (63.47, 47.94)
-Seta 6: (72.96, 64.18) -> (80.47, 55.36)
-Seta 7: (85.83, 46.06) -> (81.60, 51.88)
-Seta 8: (80.85, 73.48) -> (97.47, 61.55)
-Seta 9: (92.59, 52.54) -> (88.18, 47.56)
-Seta 10: (93.34, 66.63) -> (105.83, 45.02)
-Seta 11: (106.68, 59.68) -> (109.31, 74.61)
-Seta 1: (78.50, 31.22) -> (62.25, 70.95)
-Seta 2: (77.00, 29.72) -> (70.61, 21.64)
-Seta 3: (68.73, 48.31) -> (83.39, 48.31)
-Seta 4: (60.94, 42.21) -> (74.93, 56.86)
-Seta 5: (52.11, 40.61) -> (47.23, 18.07)
-Seta 6: (51.64, 48.22) -> (71.27, 41.17)
-Seta 7: (72.49, 32.25) -> (46.85, 21.17)
-Seta 8: (50.33, 13.56) -> (57.46, 27.18)
-Seta 9: (47.70, 11.78) -> (52.20, 25.68)
-Seta 10: (46.19, 9.43) -> (30.04, 5.58)
-Seta 11: (43.75, 17.88) -> (53.71, 20.04)
-Seta 12: (39.90, 16.00) -> (36.90, 21.92)
-Seta 13: (27.97, 16.57) -> (20.84, 4.64)
-Seta 14: (35.58, 28.50) -> (24.69, 30.37)
-Seta 15: (29.38, 29.72) -> (35.30, 39.30)
-Seta 16: (34.92, 30.94) -> (20.65, 25.58)
-Seta 17: (35.58, 45.96) -> (27.32, 24.93)
-Seta 1: (82.16, 47.00) -> (73.05, 62.40)
-Seta 2: (80.10, 57.33) -> (97.19, 46.81)
-Seta 3: (66.01, 51.32) -> (66.10, 26.80)
-Seta 4: (52.11, 50.57) -> (58.50, 37.42)
-Seta 5: (46.38, 35.45) -> (29.10, 7.18)
-Seta 6: (45.63, 49.25) -> (44.79, 60.61)
-Seta 7: (38.87, 56.48) -> (21.40, 73.20)
-Seta 8: (33.70, 49.16) -> (16.80, 70.95)
-Seta 9: (31.36, 48.03) -> (28.26, 61.18)
-Seta 10: (35.02, 47.09) -> (37.46, 40.80)
-Seta 1: (78.60, 24.55) -> (63.19, 46.25)
-Seta 2: (63.10, 15.72) -> (73.15, 47.00)
-Seta 3: (55.12, 34.98) -> (48.26, 8.58)
-Seta 4: (41.87, 48.97) -> (41.87, 28.68)
-Seta 5: (41.97, 34.98) -> (0.83, 19.85)
-Seta 6: (40.37, 21.17) -> (45.35, 20.51)
-Seta 7: (39.06, 18.92) -> (28.35, 7.08)
-Seta 8: (36.52, 20.23) -> (33.05, 42.77)
-Seta 9: (32.86, 16.47) -> (32.20, 33.00)
-Seta 10: (30.23, 14.88) -> (14.26, 27.18)
-Seta 11: (22.15, 9.90) -> (25.16, 30.19)
-Seta 12: (24.50, 30.47) -> (18.96, 12.25)
-Seta 1: (87.52, 69.54) -> (108.84, 53.76)
-Seta 2: (79.91, 41.93) -> (65.54, 63.81)
-Seta 3: (71.46, 47.18) -> (68.83, 29.53)
-Seta 4: (70.99, 25.58) -> (73.81, 51.04)
-Seta 5: (41.78, 53.29) -> (42.34, 28.59)
-Seta 6: (36.90, 49.72) -> (31.17, 37.89)
-Seta 7: (34.45, 39.67) -> (33.05, 52.73)
-Seta 8: (38.68, 35.45) -> (38.12, 56.67)
-Seta 9: (39.81, 31.50) -> (29.85, 33.10)
-
-Passes Errados
-Seta 1: (36.43, 33.75) -> (0.46, 18.82)
-Seta 2: (30.79, 12.06) -> (13.61, 25.96)
-Seta 3: (69.58, 33.00) -> (71.55, 38.83)
-Seta 4: (72.96, 63.90) -> (78.13, 65.78)
-Seta 5: (64.23, 20.51) -> (70.05, 23.99)
-Seta 6: (89.02, 45.87) -> (83.95, 53.29)
-Seta 7: (93.90, 51.04) -> (90.15, 46.43)
-Seta 8: (78.88, 23.89) -> (74.09, 17.13)
-Seta 9: (78.78, 25.30) -> (85.26, 28.78)
-Seta 10: (48.17, 28.50) -> (34.08, 22.20)
-Seta 11: (34.45, 17.69) -> (29.29, 15.16)
-Seta 12: (34.92, 26.15) -> (19.71, 23.42)
-"""
-
+RODRI_PASSES_CSV = "rodri_passes.csv"
+WYSCOUT_PITCH_SIZE = 100.0
 VITINHA_RAW_DATA = """
 All Passes – Vitinha
 
@@ -690,6 +591,51 @@ def is_progressive_attempt(row, model: str, xt_model: str = XT_MODEL_HEURISTIC) 
         row.xt_start, row.xt_end, row.x_end, row.pass_distance, xt_model,
         delta_xt=progressive_delta_for_attempt(row, xt_model),
     )
+
+
+def is_high_impact_pass_attempt(row, xt_model: str = XT_MODEL_HEURISTIC) -> bool:
+    return classify_xt_progressive_for_model(
+        row.xt_start, row.xt_end, row.x_end, row.pass_distance, xt_model,
+        delta_xt=progressive_delta_for_attempt(row, xt_model),
+    ) == "highly"
+
+
+def is_impact_pass_attempt(row, xt_model: str = XT_MODEL_HEURISTIC) -> bool:
+    return classify_xt_progressive_for_model(
+        row.xt_start, row.xt_end, row.x_end, row.pass_distance, xt_model,
+        delta_xt=progressive_delta_for_attempt(row, xt_model),
+    ) in ("progressive", "highly")
+
+
+def apply_pass_classifications(df: pd.DataFrame, xt_model: str = XT_MODEL_HEURISTIC) -> pd.DataFrame:
+    """Wyscout progressive + xT impact / high-impact flags on the same dataframe."""
+    df = df.copy()
+    progressive_flags = []
+    impact_flags = []
+    high_impact_flags = []
+    for row in df.itertuples(index=False):
+        progressive_flags.append(
+            row.is_won and is_progressive_wyscout(row.x_start, row.y_start, row.x_end, row.y_end)
+        )
+        impact_flags.append(row.is_won and is_impact_pass_attempt(row, xt_model))
+        high_impact_flags.append(row.is_won and is_high_impact_pass_attempt(row, xt_model))
+    df["progressive"] = progressive_flags
+    df["impact_pass"] = impact_flags
+    df["high_impact_pass"] = high_impact_flags
+    df["highly_progressive"] = high_impact_flags
+    return df
+
+
+def classification_accuracy(df: pd.DataFrame, success_col: str, attempt_fn) -> dict:
+    attempts = df.apply(attempt_fn, axis=1)
+    successful = int(df[success_col].astype(bool).sum())
+    attempted = int(attempts.sum())
+    accuracy_pct = (successful / attempted * 100.0) if attempted else 0.0
+    return {
+        "successful": successful,
+        "attempted": attempted,
+        "accuracy_pct": round(accuracy_pct, 1),
+    }
 
 
 def apply_progressive_model(
@@ -1460,7 +1406,7 @@ def apply_date_mapping(name: str) -> str:
 
 
 def get_match_minutes(match_name: str, hudson_matches: list[str] | None = None) -> float:
-    if match_name in INVERTED_WC_PLAYERS:
+    if match_name in {RODRI_KEY, VITINHA_KEY}:
         return WORLD_CUP_MINUTES
     name_lower = match_name.lower()
     if "houston" in name_lower:
@@ -1575,9 +1521,25 @@ def reconcile_failed_passes(
 def apply_player_orientation(player: str, x1: float, y1: float, x2: float, y2: float) -> tuple[float, float, float, float]:
     if player in Y_FLIPPED_WC_PLAYERS:
         x1, y1, x2, y2 = flip_pitch_y(x1, y1, x2, y2)
-    if player in INVERTED_WC_PLAYERS:
-        return invert_pitch_coords(x1, y1, x2, y2)
     return x1, y1, x2, y2
+
+
+def wyscout_to_statsbomb(x: float, y: float) -> tuple[float, float]:
+    """Convert Wyscout 0–100 pitch coords to StatsBomb 120×80 (attack → right)."""
+    return x * FIELD_X / WYSCOUT_PITCH_SIZE, y * FIELD_Y / WYSCOUT_PITCH_SIZE
+
+
+def parse_wyscout_csv_passes(csv_text: str, player_key: str) -> list:
+    """Parse Wyscout export CSV into internal pass events."""
+    frame = pd.read_csv(StringIO(csv_text))
+    events = []
+    for row in frame.itertuples(index=False):
+        x1, y1 = wyscout_to_statsbomb(float(row.x), float(row.y))
+        x2, y2 = wyscout_to_statsbomb(float(row.end_x), float(row.end_y))
+        x1, y1, x2, y2 = apply_player_orientation(player_key, x1, y1, x2, y2)
+        is_won = str(row.outcome).strip().lower() == "successful"
+        events.append(("PASS WON" if is_won else "PASS FAIL", x1, y1, x2, y2, ""))
+    return events
 
 
 def parse_player_passes_text(raw_text: str) -> dict:
@@ -1644,6 +1606,8 @@ def events_to_dataframe(events: list, match_name: str) -> pd.DataFrame:
     dfm["number"] = np.arange(1, len(dfm) + 1)
     dfm["is_won"] = dfm["type"].eq("PASS WON")
     dfm["progressive"] = False
+    dfm["impact_pass"] = False
+    dfm["high_impact_pass"] = False
     dfm["highly_progressive"] = False
     dfm["direction"] = dfm.apply(
         lambda r: classify_pass_direction(r["x_start"], r["y_start"], r["x_end"], r["y_end"]),
@@ -1659,13 +1623,13 @@ def events_to_dataframe(events: list, match_name: str) -> pd.DataFrame:
     return dfm
 
 
-def prepare_player_df(df: pd.DataFrame, xt_model: str, prog_model: str) -> pd.DataFrame:
+def prepare_player_df(df: pd.DataFrame, xt_model: str) -> pd.DataFrame:
     base = apply_xt_model(df, xt_model)
     if xt_model == XT_MODEL_HEURISTIC_V2:
         base["delta_xt_v2"] = base["delta_xt"]
     else:
         base["delta_xt_v2"] = apply_heuristic_v2_xt(df)["delta_xt"]
-    return apply_progressive_model(base, prog_model, xt_model)
+    return apply_pass_classifications(base, xt_model)
 
 
 def load_all_pass_data() -> tuple[dict, dict]:
@@ -1676,9 +1640,9 @@ def load_all_pass_data() -> tuple[dict, dict]:
     hudson_raw = parse_hudson_docx(read_docx_text(hudson_path))
     wc_raw: dict[str, list] = {}
 
-    bentancur_parsed = parse_player_passes_text(BENTANCUR_RAW_DATA)
-    if BENTANCUR_KEY in bentancur_parsed:
-        wc_raw[BENTANCUR_KEY] = bentancur_parsed[BENTANCUR_KEY]
+    rodri_path = Path(RODRI_PASSES_CSV)
+    if rodri_path.exists():
+        wc_raw[RODRI_KEY] = parse_wyscout_csv_passes(rodri_path.read_text(encoding="utf-8"), RODRI_KEY)
 
     vitinha_parsed = parse_player_passes_text(VITINHA_RAW_DATA)
     if VITINHA_KEY in vitinha_parsed:
@@ -1730,24 +1694,21 @@ def resolve_hudson_v5_dataframe(
 def compute_stats(
     df: pd.DataFrame,
     match_name: str,
-    prog_model: str = PROG_MODEL_WYSCOUT,
     xt_model: str = XT_MODEL_HEURISTIC,
 ) -> dict:
-    df = apply_progressive_model(df, prog_model, xt_model)
     total = len(df)
     mins = get_match_minutes(match_name)
     p90_factor = 90.0 / mins if mins > 0 else 1.0
+    empty_cls = {"successful": 0, "attempted": 0, "accuracy_pct": 0.0}
     if total == 0:
         return {
             "total_passes": 0,
             "successful_passes": 0,
             "unsuccessful_passes": 0,
             "accuracy_pct": 0.0,
-            "progressive_attempted": 0,
-            "progressive_successful": 0,
-            "progressive_accuracy_pct": 0.0,
-            "highly_progressive": 0,
-            "highly_progressive_pct": 0.0,
+            "progressive_wyscout": empty_cls.copy(),
+            "impact_pass": empty_cls.copy(),
+            "high_impact_pass": empty_cls.copy(),
             "to_final_third_total": 0,
             "to_final_third_success": 0,
             "to_final_third_accuracy_pct": 0.0,
@@ -1777,14 +1738,22 @@ def compute_stats(
     successful = int(df["is_won"].sum())
     unsuccessful = total - successful
     accuracy = successful / total * 100.0
-    progressive_total = int(df["progressive"].sum())
-    highly_progressive = int(df["highly_progressive"].sum())
-    highly_progressive_pct = (highly_progressive / successful * 100.0) if successful else 0.0
-    progressive_unsuccessful = int(
-        (~df["is_won"] & df.apply(lambda r: is_progressive_attempt(r, prog_model, xt_model), axis=1)).sum()
+    progressive_wyscout = classification_accuracy(
+        df,
+        "progressive",
+        lambda r: is_progressive_wyscout(r["x_start"], r["y_start"], r["x_end"], r["y_end"]),
     )
-    progressive_attempted = progressive_total + progressive_unsuccessful
-    progressive_accuracy = (progressive_total / progressive_attempted * 100.0) if progressive_attempted else 0.0
+    impact_pass = classification_accuracy(
+        df,
+        "impact_pass",
+        lambda r: is_impact_pass_attempt(r, xt_model),
+    )
+    high_impact_pass = classification_accuracy(
+        df,
+        "high_impact_pass",
+        lambda r: is_high_impact_pass_attempt(r, xt_model),
+    )
+    progressive_total = progressive_wyscout["successful"]
     to_final_third = (df["x_start"] < FINAL_THIRD_LINE_X) & (df["x_end"] >= FINAL_THIRD_LINE_X)
     to_final_third_total = int(to_final_third.sum())
     to_final_third_success = int((to_final_third & df["is_won"]).sum())
@@ -1814,7 +1783,7 @@ def compute_stats(
     sum_dxt_v2 = float(df.loc[df["is_won"], "delta_xt_v2"].sum()) if "delta_xt_v2" in df.columns else 0.0
     neg_xt = float(df.loc[df["is_won"] & (df["delta_xt"] < 0), "delta_xt"].sum())
     advanced_successful = progressive_total + to_final_third_success
-    advanced_attempted = progressive_attempted + to_final_third_total
+    advanced_attempted = progressive_wyscout["attempted"] + to_final_third_total
     advanced_accuracy_pct = (advanced_successful / advanced_attempted * 100.0) if advanced_attempted else 0.0
     advanced_passes_p90 = round((progressive_total + to_final_third_success) * p90_factor, 2)
     return {
@@ -1822,11 +1791,9 @@ def compute_stats(
         "successful_passes": successful,
         "unsuccessful_passes": unsuccessful,
         "accuracy_pct": round(accuracy, 2),
-        "progressive_attempted": progressive_attempted,
-        "progressive_successful": progressive_total,
-        "highly_progressive": highly_progressive,
-        "highly_progressive_pct": round(highly_progressive_pct, 1),
-        "progressive_accuracy_pct": round(progressive_accuracy, 2),
+        "progressive_wyscout": progressive_wyscout,
+        "impact_pass": impact_pass,
+        "high_impact_pass": high_impact_pass,
         "to_final_third_total": to_final_third_total,
         "to_final_third_success": to_final_third_success,
         "to_final_third_accuracy_pct": round(to_final_third_accuracy, 2),
@@ -1856,47 +1823,24 @@ def compute_stats(
 
 
 def build_hudson_v5_dataframe(raw_df: pd.DataFrame) -> pd.DataFrame:
-    """Prepara passes do Hudson com heurístico xT v5 e flags progressivas por modelo."""
+    """Prepara passes do Hudson com heurístico xT v5 e classificações Wyscout + impacto xT."""
     base = apply_xt_model(raw_df, XT_MODEL_HEURISTIC_V5)
     if "delta_xt_v2" not in base.columns:
         base["delta_xt_v2"] = apply_heuristic_v2_xt(raw_df)["delta_xt"]
-
-    wyscout_df = apply_progressive_model(base, PROG_MODEL_WYSCOUT, XT_MODEL_HEURISTIC_V5)
-    base["progressive_wyscout"] = wyscout_df["progressive"].astype(bool)
-
-    opta_df = apply_progressive_model(base, PROG_MODEL_OPTA, XT_MODEL_HEURISTIC_V5)
-    base["progressive_opta"] = opta_df["progressive"].astype(bool)
-
-    xt_df = apply_progressive_model(base, PROG_MODEL_XT, XT_MODEL_HEURISTIC_V5)
-    base["progressive_xt"] = xt_df["progressive"].astype(bool)
-    base["highly_progressive"] = xt_df["highly_progressive"].astype(bool)
-    base["progressive"] = base["progressive_xt"]
-    return base
+    return apply_pass_classifications(base, XT_MODEL_HEURISTIC_V5)
 
 
 def _hudson_progressive_breakdown(
     df: pd.DataFrame,
-    prog_model: str,
     success_col: str,
+    attempt_fn,
 ) -> dict:
-    """Contagem e acurácia de progressivos (mesma lógica de compute_stats)."""
-    attempts = df.apply(
-        lambda r: is_progressive_attempt(r, prog_model, XT_MODEL_HEURISTIC_V5),
-        axis=1,
-    )
-    successful = int(df[success_col].astype(bool).sum())
-    unsuccessful = int((~df["is_won"] & attempts).sum())
-    attempted = successful + unsuccessful
-    accuracy_pct = (successful / attempted * 100.0) if attempted else 0.0
-    return {
-        "successful": successful,
-        "attempted": attempted,
-        "accuracy_pct": round(accuracy_pct, 2),
-    }
+    """Contagem e acurácia de classificação de passes."""
+    return classification_accuracy(df, success_col, attempt_fn)
 
 
 def compute_hudson_v5_stats(df: pd.DataFrame) -> dict:
-    """Estatísticas completas do Hudson com mapa xT v5 e comparação de progressivos."""
+    """Estatísticas completas do Hudson com mapa xT v5 e classificações de passe."""
     total = len(df)
     if total == 0:
         empty_prog = {"successful": 0, "attempted": 0, "accuracy_pct": 0.0}
@@ -1905,9 +1849,8 @@ def compute_hudson_v5_stats(df: pd.DataFrame) -> dict:
             "successful_passes": 0,
             "accuracy_pct": 0.0,
             "progressive_wyscout": empty_prog.copy(),
-            "progressive_opta": empty_prog.copy(),
-            "progressive_xt": empty_prog.copy(),
-            "highly_progressive": 0,
+            "impact_pass": empty_prog.copy(),
+            "high_impact_pass": empty_prog.copy(),
             "sum_dxt": 0.0,
             "sum_xt_end": 0.0,
             "mean_xt_end": 0.0,
@@ -1916,10 +1859,21 @@ def compute_hudson_v5_stats(df: pd.DataFrame) -> dict:
 
     successful = int(df["is_won"].sum())
     accuracy_pct = successful / total * 100.0
-    wyscout = _hudson_progressive_breakdown(df, PROG_MODEL_WYSCOUT, "progressive_wyscout")
-    opta = _hudson_progressive_breakdown(df, PROG_MODEL_OPTA, "progressive_opta")
-    xt_prog = _hudson_progressive_breakdown(df, PROG_MODEL_XT, "progressive_xt")
-    highly_progressive = int(df["highly_progressive"].astype(bool).sum())
+    wyscout = _hudson_progressive_breakdown(
+        df,
+        "progressive",
+        lambda r: is_progressive_wyscout(r["x_start"], r["y_start"], r["x_end"], r["y_end"]),
+    )
+    impact = _hudson_progressive_breakdown(
+        df,
+        "impact_pass",
+        lambda r: is_impact_pass_attempt(r, XT_MODEL_HEURISTIC_V5),
+    )
+    high_impact = _hudson_progressive_breakdown(
+        df,
+        "high_impact_pass",
+        lambda r: is_high_impact_pass_attempt(r, XT_MODEL_HEURISTIC_V5),
+    )
 
     delta_xt = pd.to_numeric(df["delta_xt"], errors="coerce").fillna(0.0)
     xt_end = pd.to_numeric(df["xt_end"], errors="coerce").fillna(0.0)
@@ -1933,9 +1887,8 @@ def compute_hudson_v5_stats(df: pd.DataFrame) -> dict:
         "successful_passes": successful,
         "accuracy_pct": round(accuracy_pct, 2),
         "progressive_wyscout": wyscout,
-        "progressive_opta": opta,
-        "progressive_xt": xt_prog,
-        "highly_progressive": highly_progressive,
+        "impact_pass": impact,
+        "high_impact_pass": high_impact,
         "sum_dxt": round(sum_dxt, 3),
         "sum_xt_end": round(sum_xt_end, 3),
         "mean_xt_end": round(mean_xt_end, 3),
@@ -1976,7 +1929,7 @@ def render_hudson_v5_tab(raw_df: pd.DataFrame, match_name: str) -> None:
                 ("Total de passes", f"{stats['total_passes']:.0f}"),
                 ("Passes certos", f"{stats['successful_passes']:.0f}"),
                 ("% Acurácia geral", f"{stats['accuracy_pct']:.1f}%"),
-                ("Super progressivos (xT v5)", f"{stats['highly_progressive']:.0f}"),
+                ("High Impact Passes", f"{stats['high_impact_pass']['successful']:.0f}"),
             ],
         )
         stats_section_card(
@@ -1990,12 +1943,12 @@ def render_hudson_v5_tab(raw_df: pd.DataFrame, match_name: str) -> None:
             ],
         )
 
-    st.markdown("### Passes progressivos por critério")
+    st.markdown("### Classificação de passes")
     prog_cols = st.columns(3, gap="medium")
     prog_specs = [
-        ("Wyscout", stats["progressive_wyscout"]),
-        ("Opta", stats["progressive_opta"]),
-        ("xT (v5)", stats["progressive_xt"]),
+        ("Passes Progressivos (Wyscout)", stats["progressive_wyscout"]),
+        ("Impact Passes (xT)", stats["impact_pass"]),
+        ("High Impact Passes (xT)", stats["high_impact_pass"]),
     ]
     for col, (label, prog) in zip(prog_cols, prog_specs):
         with col:
@@ -2003,9 +1956,9 @@ def render_hudson_v5_tab(raw_df: pd.DataFrame, match_name: str) -> None:
                 label,
                 tone,
                 [
-                    ("Progressivos certos", f"{prog['successful']:.0f}"),
-                    ("Tentativas progressivas", f"{prog['attempted']:.0f}"),
-                    ("% acertados", f"{prog['accuracy_pct']:.1f}%"),
+                    ("Certos", f"{prog['successful']:.0f}"),
+                    ("Tentativas", f"{prog['attempted']:.0f}"),
+                    ("% acerto", f"{prog['accuracy_pct']:.1f}%"),
                 ],
             )
 
@@ -2014,13 +1967,13 @@ def render_hudson_v5_tab(raw_df: pd.DataFrame, match_name: str) -> None:
     pass_cols = st.columns(2, gap="large")
     with pass_cols[0]:
         st.markdown('<div class="player-header">Todos os passes</div>', unsafe_allow_html=True)
-        render_player_maps(df, PROG_MODEL_XT, PASS_MAP_FILTER_ALL)
+        render_player_maps(df, PASS_MAP_FILTER_ALL)
     with pass_cols[1]:
         st.markdown(
-            f'<div class="player-header">Super progressivos ({stats["highly_progressive"]:.0f})</div>',
+            f'<div class="player-header">High Impact Passes ({stats["high_impact_pass"]["successful"]:.0f})</div>',
             unsafe_allow_html=True,
         )
-        render_player_maps(df, PROG_MODEL_XT, PASS_MAP_FILTER_SUPER)
+        render_player_maps(df, PASS_MAP_FILTER_HIGH_IMPACT)
 
 
 def _item_sep(idx: int, total: int) -> str:
@@ -2115,15 +2068,15 @@ def _save_fig(fig):
     return Image.open(buf)
 
 
-def draw_pass_map(df, prog_model: str = PROG_MODEL_WYSCOUT):
+def draw_pass_map(df):
     fig, ax, pitch = _base_pitch()
     for _, row in df.iterrows():
         is_lost = not row["is_won"]
-        is_highly = bool(row.get("highly_progressive", False))
-        is_prog = bool(row["progressive"])
+        is_high_impact = bool(row.get("high_impact_pass", False))
+        is_prog = bool(row.get("progressive", False))
         if is_lost:
             color, alpha = COLOR_FAIL, 0.72
-        elif is_highly:
+        elif is_high_impact:
             color, alpha = COLOR_HIGHLY_PROGRESSIVE, 0.95
         elif is_prog:
             color, alpha = COLOR_PROGRESSIVE, 0.88
@@ -2156,8 +2109,8 @@ def draw_pass_map(df, prog_model: str = PROG_MODEL_WYSCOUT):
         )
     legend_handles = [
         Line2D([0], [0], color=COLOR_SUCCESS, lw=2.0, label="Completado", alpha=0.65),
-        Line2D([0], [0], color=COLOR_PROGRESSIVE, lw=2.0, label="Progressivo", alpha=0.90),
-        Line2D([0], [0], color=COLOR_HIGHLY_PROGRESSIVE, lw=2.0, label="Super Progressivo", alpha=0.95),
+        Line2D([0], [0], color=COLOR_PROGRESSIVE, lw=2.0, label="Progressivo (Wyscout)", alpha=0.90),
+        Line2D([0], [0], color=COLOR_HIGHLY_PROGRESSIVE, lw=2.0, label="High Impact Pass", alpha=0.95),
         Line2D([0], [0], color=COLOR_FAIL, lw=2.0, label="Incompleto", alpha=0.90),
     ]
     leg = ax.legend(
@@ -2472,9 +2425,8 @@ def draw_pass_delta_scatter_pair(
 
 def render_heuristic_comparison(
     hudson_base: pd.DataFrame,
-    bentancur_base: pd.DataFrame,
+    rodri_base: pd.DataFrame,
     vitinha_base: pd.DataFrame,
-    prog_model: str,
     hudson_label: str,
 ):
     grid_v1 = compute_heuristic_xt_grid()
@@ -2536,16 +2488,16 @@ def render_heuristic_comparison(
 
     bases = [
         ("Hudson Cicala", hudson_base, hudson_label),
-        ("Bentancur", bentancur_base, "Copa — vs Arábia Saudita"),
+        ("Rodri", rodri_base, "Copa — vs Arábia Saudita"),
         ("Vitinha", vitinha_base, "Vitinha"),
     ]
     impact_rows = []
     for name, base_df, _ in bases:
-        df_v1 = prepare_player_df(base_df, XT_MODEL_HEURISTIC, prog_model)
-        df_v2 = prepare_player_df(base_df, XT_MODEL_HEURISTIC_V2, prog_model)
-        df_v3 = prepare_player_df(base_df, XT_MODEL_HEURISTIC_V3, prog_model)
-        df_v4 = prepare_player_df(base_df, XT_MODEL_HEURISTIC_V4, prog_model)
-        df_v5 = prepare_player_df(base_df, XT_MODEL_HEURISTIC_V5, prog_model)
+        df_v1 = prepare_player_df(base_df, XT_MODEL_HEURISTIC)
+        df_v2 = prepare_player_df(base_df, XT_MODEL_HEURISTIC_V2)
+        df_v3 = prepare_player_df(base_df, XT_MODEL_HEURISTIC_V3)
+        df_v4 = prepare_player_df(base_df, XT_MODEL_HEURISTIC_V4)
+        df_v5 = prepare_player_df(base_df, XT_MODEL_HEURISTIC_V5)
         impact_rows.append({
             "name": name,
             "v1_impact": float(df_v1.loc[df_v1["is_won"], "delta_xt"].sum()),
@@ -2569,28 +2521,28 @@ def render_heuristic_comparison(
     with scatter_col:
         scatter_tabs = st.tabs(["v4 vs v5", "v3 vs v4", "v1 vs v4"])
         with scatter_tabs[0]:
-            bent = next(r for r in impact_rows if r["name"] == "Bentancur")
+            rod = next(r for r in impact_rows if r["name"] == "Rodri")
             img, fig = draw_pass_delta_scatter_pair(
-                bent["df_v4"], bent["df_v5"],
-                "Bentancur — ΔxT v4 vs v5",
+                rod["df_v4"], rod["df_v5"],
+                "Rodri — ΔxT v4 vs v5",
                 "v4", "v5", color="#9b59b6",
             )
             plt.close(fig)
             st.image(img, use_container_width=True)
         with scatter_tabs[1]:
-            bent = next(r for r in impact_rows if r["name"] == "Bentancur")
+            rod = next(r for r in impact_rows if r["name"] == "Rodri")
             img, fig = draw_pass_delta_scatter_pair(
-                bent["df_v3"], bent["df_v4"],
-                "Bentancur — ΔxT v3 vs v4",
+                rod["df_v3"], rod["df_v4"],
+                "Rodri — ΔxT v3 vs v4",
                 "v3", "v4", color="#c8102e",
             )
             plt.close(fig)
             st.image(img, use_container_width=True)
         with scatter_tabs[2]:
-            bent = next(r for r in impact_rows if r["name"] == "Bentancur")
+            rod = next(r for r in impact_rows if r["name"] == "Rodri")
             img, fig = draw_pass_delta_scatter_pair(
-                bent["df_v1"], bent["df_v4"],
-                "Bentancur — ΔxT v1 vs v4",
+                rod["df_v1"], rod["df_v4"],
+                "Rodri — ΔxT v1 vs v4",
                 "v1", "v4", color="#5b9bd5",
             )
             plt.close(fig)
@@ -2599,7 +2551,7 @@ def render_heuristic_comparison(
     scatter_player_cols = st.columns(3)
     scatter_colors = {
         "Hudson Cicala": "#5b9bd5",
-        "Bentancur": "#70ad47",
+        "Rodri": "#e67e22",
         "Vitinha": "#d4a843",
     }
     for col, row in zip(scatter_player_cols, impact_rows):
@@ -2636,16 +2588,13 @@ def render_heuristic_comparison(
             "% Δ>0 v3": round((won_v3["delta_xt"] > 0).mean() * 100, 1),
             "% Δ>0 v4": round((won_v4["delta_xt"] > 0).mean() * 100, 1),
             "% Δ>0 v5": round((won_v5["delta_xt"] > 0).mean() * 100, 1),
-            "Prog. v1": int(df_v1["progressive"].sum()),
-            "Super v1": int(df_v1["highly_progressive"].sum()),
-            "Prog. v2": int(df_v2["progressive"].sum()),
-            "Super v2": int(df_v2["highly_progressive"].sum()),
-            "Prog. v3": int(df_v3["progressive"].sum()),
-            "Super v3": int(df_v3["highly_progressive"].sum()),
-            "Prog. v4": int(df_v4["progressive"].sum()),
-            "Super v4": int(df_v4["highly_progressive"].sum()),
-            "Prog. v5": int(df_v5["progressive"].sum()),
-            "Super v5": int(df_v5["highly_progressive"].sum()),
+            "Prog Wyscout": int(df_v3["progressive"].sum()),
+            "Impact v1": int(df_v1["impact_pass"].sum()),
+            "High Impact v1": int(df_v1["high_impact_pass"].sum()),
+            "Impact v3": int(df_v3["impact_pass"].sum()),
+            "High Impact v3": int(df_v3["high_impact_pass"].sum()),
+            "Impact v5": int(df_v5["impact_pass"].sum()),
+            "High Impact v5": int(df_v5["high_impact_pass"].sum()),
         })
     st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
@@ -2852,16 +2801,16 @@ def get_xt_comparison_pdf_bytes() -> bytes:
     return build_xt_comparison_pdf()
 
 
-def render_player_maps(df: pd.DataFrame, prog_model: str, pass_filter: str = PASS_MAP_FILTER_ALL):
-    if pass_filter == PASS_MAP_FILTER_SUPER:
-        df_map = df[df["highly_progressive"]].copy()
+def render_player_maps(df: pd.DataFrame, pass_filter: str = PASS_MAP_FILTER_ALL):
+    if pass_filter == PASS_MAP_FILTER_HIGH_IMPACT:
+        df_map = df[df["high_impact_pass"]].copy()
         if df_map.empty:
-            st.info("Nenhum passe super progressivo neste recorte.")
+            st.info("Nenhum High Impact Pass neste recorte.")
             return
     else:
         df_map = df
 
-    img_pm, fig_pm = draw_pass_map(df_map, prog_model)
+    img_pm, fig_pm = draw_pass_map(df_map)
     plt.close(fig_pm)
     st.markdown('<div class="map-label">Pass Map</div>', unsafe_allow_html=True)
     st.image(img_pm, use_container_width=True)
@@ -2877,16 +2826,18 @@ def render_player_maps(df: pd.DataFrame, prog_model: str, pass_filter: str = PAS
     st.image(img_xt, use_container_width=True)
 
 
-def render_player_cards(stats: dict, tone: str, prog_model: str):
+def render_player_cards(stats: dict, tone: str):
+    wyscout = stats["progressive_wyscout"]
+    impact = stats["impact_pass"]
+    high_impact = stats["high_impact_pass"]
     progressive_items = [
-        ("Passes Progressivos", f"{stats['progressive_successful']:.0f}"),
-        ("Super Progressivos", f"{stats['highly_progressive']:.0f}"),
-        ("% Acurácia Progressiva", f"{stats['progressive_accuracy_pct']:.1f}%"),
+        ("Passes Progressivos", f"{wyscout['successful']:.0f}"),
+        ("% Acurácia Progressiva", f"{wyscout['accuracy_pct']:.1f}%"),
+        ("Impact Passes", f"{impact['successful']:.0f}"),
+        ("% Acurácia Impact Passes", f"{impact['accuracy_pct']:.1f}%"),
+        ("High Impact Passes", f"{high_impact['successful']:.0f}"),
+        ("% Acurácia High Impact", f"{high_impact['accuracy_pct']:.1f}%"),
     ]
-    if prog_model == PROG_MODEL_XT:
-        progressive_items.append(
-            ("% Altamente Prog. (xT)", f"{stats['highly_progressive_pct']:.1f}%"),
-        )
     stats_section_card(
         "Overview",
         tone,
@@ -2895,7 +2846,7 @@ def render_player_cards(stats: dict, tone: str, prog_model: str):
             ("% Accuracy", f"{stats['accuracy_pct']:.1f}%"),
         ],
     )
-    stats_section_card("Progressive", tone, progressive_items)
+    stats_section_card("Passes", tone, progressive_items)
     stats_section_card(
         "Impact",
         tone,
@@ -2910,10 +2861,10 @@ def render_player_cards(stats: dict, tone: str, prog_model: str):
 # ── DATA LOAD ──────────────────────────────────────────────────
 hudson_dfs, wc_dfs = load_all_pass_data()
 
-if not hudson_dfs or BENTANCUR_KEY not in wc_dfs or VITINHA_KEY not in wc_dfs:
+if not hudson_dfs or RODRI_KEY not in wc_dfs or VITINHA_KEY not in wc_dfs:
     st.error(
-        "Não foi possível carregar os dados. Verifique se o arquivo "
-        f"'{HUDSON_DOCX}' está no diretório do app."
+        "Não foi possível carregar os dados. Verifique se os arquivos "
+        f"'{HUDSON_DOCX}' e '{RODRI_PASSES_CSV}' estão no diretório do app."
     )
     st.stop()
 
@@ -2939,8 +2890,9 @@ st.sidebar.markdown(
     """
     <div style="color:#94a3b8;font-size:0.85rem;line-height:1.5;">
       Comparação de passes por partida.<br>
-      Bentancur e Vitinha: jogos fixos da Copa do Mundo.<br>
-      Hudson: selecione o jogo na área principal.
+      Rodri e Vitinha: jogos fixos da Copa do Mundo.<br>
+      Hudson: selecione o jogo na área principal.<br>
+      Progressivos: Wyscout · Impacto: xT (modelo selecionado).
     </div>
     """,
     unsafe_allow_html=True,
@@ -2956,17 +2908,6 @@ xt_model = st.sidebar.radio(
     label_visibility="collapsed",
 )
 st.sidebar.caption(XT_MODEL_DESCRIPTIONS[xt_model])
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("**Critério de Progressive Pass**")
-prog_model = st.sidebar.radio(
-    "Modelo de avaliação",
-    options=list(PROG_MODEL_LABELS.keys()),
-    format_func=lambda k: PROG_MODEL_LABELS[k],
-    key="prog_model_selector",
-    label_visibility="collapsed",
-)
-st.sidebar.caption(PROG_MODEL_DESCRIPTIONS[prog_model])
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Filtro do mapa de passes**")
@@ -2994,7 +2935,7 @@ tab_compare, tab_hudson = st.tabs(["Comparação jogadores", "Hudson Cicala (v5)
 
 with tab_compare:
     st.markdown("## Passes — Comparação de Jogadores")
-    st.caption("Hudson Cicala vs Bentancur (vs Arábia Saudita) vs Vitinha")
+    st.caption("Hudson Cicala vs Rodri (vs Arábia Saudita) vs Vitinha")
 
     selected_hudson_match = st.selectbox(
         "Selecione o jogo de Hudson Cicala para comparar",
@@ -3003,13 +2944,13 @@ with tab_compare:
         key="hudson_match_selector",
     )
 
-    hudson_df = prepare_player_df(hudson_dfs[selected_hudson_match], xt_model, prog_model)
-    bentancur_df = prepare_player_df(wc_dfs[BENTANCUR_KEY], xt_model, prog_model)
-    vitinha_df = prepare_player_df(wc_dfs[VITINHA_KEY], xt_model, prog_model)
+    hudson_df = prepare_player_df(hudson_dfs[selected_hudson_match], xt_model)
+    rodri_df = prepare_player_df(wc_dfs[RODRI_KEY], xt_model)
+    vitinha_df = prepare_player_df(wc_dfs[VITINHA_KEY], xt_model)
 
-    hudson_stats = compute_stats(hudson_df, selected_hudson_match, prog_model, xt_model)
-    bentancur_stats = compute_stats(bentancur_df, BENTANCUR_KEY, prog_model, xt_model)
-    vitinha_stats = compute_stats(vitinha_df, VITINHA_KEY, prog_model, xt_model)
+    hudson_stats = compute_stats(hudson_df, selected_hudson_match, xt_model)
+    rodri_stats = compute_stats(rodri_df, RODRI_KEY, xt_model)
+    vitinha_stats = compute_stats(vitinha_df, VITINHA_KEY, xt_model)
 
     players = [
         {
@@ -3020,11 +2961,11 @@ with tab_compare:
             "tone": PLAYER_TONES["Hudson Cicala"],
         },
         {
-            "name": "Bentancur",
+            "name": "Rodri",
             "subtitle": "Copa do Mundo — vs Arábia Saudita",
-            "df": bentancur_df,
-            "stats": bentancur_stats,
-            "tone": PLAYER_TONES["Bentancur"],
+            "df": rodri_df,
+            "stats": rodri_stats,
+            "tone": PLAYER_TONES["Rodri"],
         },
         {
             "name": "Vitinha",
@@ -3037,7 +2978,7 @@ with tab_compare:
 
     st.markdown("---")
     st.markdown(
-        f"### Mapas de Passe — {PROG_MODEL_LABELS[prog_model]} · xT: {XT_MODEL_LABELS[xt_model]}"
+        f"### Mapas de Passe — Progressivos Wyscout · xT: {XT_MODEL_LABELS[xt_model]}"
     )
 
     map_cols = st.columns(3)
@@ -3045,11 +2986,11 @@ with tab_compare:
         with col:
             st.markdown(f'<div class="player-header">{player["name"]}</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="player-sub">{player["subtitle"]}</div>', unsafe_allow_html=True)
-            render_player_maps(player["df"], prog_model, pass_map_filter)
+            render_player_maps(player["df"], pass_map_filter)
 
     st.markdown("---")
     st.markdown(
-        f"### Estatísticas do jogo — {PROG_MODEL_LABELS[prog_model]} · xT: {XT_MODEL_LABELS[xt_model]}"
+        f"### Estatísticas do jogo — xT: {XT_MODEL_LABELS[xt_model]}"
     )
 
     stat_cols = st.columns(3)
@@ -3057,13 +2998,12 @@ with tab_compare:
         with col:
             st.markdown(f'<div class="player-header">{player["name"]}</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="player-sub">{player["subtitle"]}</div>', unsafe_allow_html=True)
-            render_player_cards(player["stats"], player["tone"], prog_model)
+            render_player_cards(player["stats"], player["tone"])
 
     render_heuristic_comparison(
         hudson_dfs[selected_hudson_match],
-        wc_dfs[BENTANCUR_KEY],
+        wc_dfs[RODRI_KEY],
         wc_dfs[VITINHA_KEY],
-        prog_model,
         selected_hudson_match,
     )
 
