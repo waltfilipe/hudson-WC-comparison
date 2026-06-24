@@ -371,7 +371,7 @@ class BrowserClient:
         for base in API_BASES:
             url = f"{base}/{rel_path}"
             try:
-                payload = self._fetch_via_browser(url)
+                payload = self._fetch_via_navigation(url)
                 if isinstance(payload, dict) and payload.get("error"):
                     error = payload["error"]
                     if error.get("code") == 403:
@@ -385,40 +385,18 @@ class BrowserClient:
 
         raise RuntimeError(f"Falha ao acessar {rel_path} via browser") from last_error
 
-    def _fetch_via_browser(self, url: str) -> dict[str, Any]:
-        script = """
-        const url = arguments[0];
-        const referer = arguments[1];
-        const done = arguments[arguments.length - 1];
-        fetch(url, {
-            method: 'GET',
-            credentials: 'include',
-            headers: {
-                'Accept': 'application/json, text/plain, */*',
-                'Referer': referer,
-            },
-        })
-        .then(async (response) => {
-            let data = null;
-            try {
-                data = await response.json();
-            } catch (error) {
-                data = {error: {message: 'invalid json', status: response.status}};
-            }
-            done({ok: response.ok, status: response.status, data});
-        })
-        .catch((error) => done({ok: false, status: 0, data: {error: {message: String(error)}}}));
-        """
-        result = self.driver.execute_async_script(script, url, self.match_url)
-        if not isinstance(result, dict):
-            raise RuntimeError(f"Resposta inesperada do browser para {url}")
+    def _fetch_via_navigation(self, url: str) -> dict[str, Any]:
+        """Abre a URL da API diretamente no Chrome (evita bloqueio CORS do fetch)."""
+        from bs4 import BeautifulSoup
 
-        status = result.get("status", 0)
-        payload = result.get("data", {})
-        if status == 403 or (isinstance(payload, dict) and payload.get("error", {}).get("code") == 403):
-            raise RuntimeError(f"403 Forbidden em {url}")
-        if not result.get("ok"):
-            raise RuntimeError(f"HTTP {status} em {url}: {payload}")
+        self.driver.get(url)
+        time.sleep(self.delay)
+
+        soup = BeautifulSoup(self.driver.page_source, "html.parser")
+        pre = soup.find("pre")
+        raw_text = pre.get_text() if pre else soup.get_text()
+        json_text = _extract_json_text(raw_text)
+        payload = json.loads(json_text)
         if not isinstance(payload, dict):
             raise RuntimeError(f"JSON inválido em {url}")
         return payload
@@ -430,9 +408,6 @@ class BrowserClient:
         return self.get_json(f"event/{self.match_id}")
 
     def get_rating_breakdown(self, player_id: int) -> dict[str, Any]:
-        if "sofascore.com" not in (self.driver.current_url or ""):
-            self.driver.get(self.match_url)
-            time.sleep(self.delay)
         return self.get_json(f"event/{self.match_id}/player/{player_id}/rating-breakdown")
 
 
@@ -484,11 +459,11 @@ def create_working_client(
                 break
 
     raise RuntimeError(
-        "Não foi possível acessar a API do SofaScore (403).\n"
+        "Não foi possível acessar a API do SofaScore.\n"
         "Tente:\n"
-        "  1) MODE = 'browser' no notebook (abre o Chrome visível)\n"
-        "  2) Baixar JSONs com download_rating_breakdowns()\n"
-        "  3) Exportar rating-breakdown no DevTools para pasta raw/"
+        "  1) Atualizar extract_sofascore_match_events.py (correção CORS/browser)\n"
+        "  2) Exportar rating-breakdown no DevTools para pasta raw/PLAYER_ID.json\n"
+        "  3) Usar extract_match_events(..., rating_dir=RAW_DIR)"
     ) from last_error
 
 
@@ -586,6 +561,25 @@ def download_rating_breakdowns(
             f"  3) Salve em {raw_dir}/PLAYER_ID.json"
         )
     return raw_dir
+
+
+def print_rating_breakdown_urls(
+    match_url_or_id: str,
+    lineups_file: Path,
+    *,
+    base_dir: Path | None = None,
+) -> None:
+    """Imprime URLs para abrir no Chrome e salvar cada JSON manualmente."""
+    match_id = parse_match_id(match_url_or_id)
+    lineups = load_lineups_file(lineups_file, base_dir=base_dir)
+    players = players_from_lineups(lineups)
+    print("Abra cada URL no Chrome, Ctrl+S e salve como raw/PLAYER_ID.json\n")
+    for player in players:
+        url = (
+            f"https://www.sofascore.com/api/v1/event/{match_id}/"
+            f"player/{player.player_id}/rating-breakdown"
+        )
+        print(f"{player.player_name}: {url}")
 
 
 def extract_match_events(
