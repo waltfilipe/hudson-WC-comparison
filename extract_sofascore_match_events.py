@@ -388,12 +388,14 @@ class BrowserClient:
     def _fetch_via_browser(self, url: str) -> dict[str, Any]:
         script = """
         const url = arguments[0];
+        const referer = arguments[1];
         const done = arguments[arguments.length - 1];
         fetch(url, {
             method: 'GET',
             credentials: 'include',
             headers: {
                 'Accept': 'application/json, text/plain, */*',
+                'Referer': referer,
             },
         })
         .then(async (response) => {
@@ -407,7 +409,7 @@ class BrowserClient:
         })
         .catch((error) => done({ok: false, status: 0, data: {error: {message: String(error)}}}));
         """
-        result = self.driver.execute_async_script(script, url)
+        result = self.driver.execute_async_script(script, url, self.match_url)
         if not isinstance(result, dict):
             raise RuntimeError(f"Resposta inesperada do browser para {url}")
 
@@ -428,6 +430,9 @@ class BrowserClient:
         return self.get_json(f"event/{self.match_id}")
 
     def get_rating_breakdown(self, player_id: int) -> dict[str, Any]:
+        if "sofascore.com" not in (self.driver.current_url or ""):
+            self.driver.get(self.match_url)
+            time.sleep(self.delay)
         return self.get_json(f"event/{self.match_id}/player/{player_id}/rating-breakdown")
 
 
@@ -436,21 +441,24 @@ def create_working_client(
     match_url: str,
     match_id: int,
     delay: float,
+    *,
+    probe_path: str | None = None,
 ) -> tuple[Any, str]:
     """Tenta curl e/ou Chrome até conseguir acessar a API."""
+    probe_path = probe_path or f"event/{match_id}"
     attempts: list[tuple[str, dict[str, Any]]] = []
 
     if mode == "curl":
         attempts.append(("curl", {}))
     elif mode == "browser":
-        attempts.append(("browser-headless", {"headless": True}))
         attempts.append(("browser-visible", {"headless": False}))
+        attempts.append(("browser-headless", {"headless": True}))
     else:
         attempts.extend(
             [
                 ("curl", {}),
-                ("browser-headless", {"headless": True}),
                 ("browser-visible", {"headless": False}),
+                ("browser-headless", {"headless": True}),
             ]
         )
 
@@ -462,7 +470,7 @@ def create_working_client(
                 client = CurlCffiClient(match_url, match_id, delay=delay)
             else:
                 client = BrowserClient(match_url, match_id, delay=delay, **options)
-            client.get_event()
+            client.get_json(probe_path)
             print(f"Conectado via {label}")
             return client, label
         except Exception as exc:  # noqa: BLE001
@@ -478,9 +486,9 @@ def create_working_client(
     raise RuntimeError(
         "Não foi possível acessar a API do SofaScore (403).\n"
         "Tente:\n"
-        "  1) MODE = 'browser' no notebook (abre o Chrome)\n"
-        "  2) Instalar/atualizar o Google Chrome\n"
-        "  3) Exportar lineups.json no DevTools e usar --lineups"
+        "  1) MODE = 'browser' no notebook (abre o Chrome visível)\n"
+        "  2) Baixar JSONs com download_rating_breakdowns()\n"
+        "  3) Exportar rating-breakdown no DevTools para pasta raw/"
     ) from last_error
 
 
@@ -497,6 +505,89 @@ def team_names_from_event(event_payload: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def load_rating_breakdown_file(player_id: int, rating_dir: Path) -> dict[str, Any] | None:
+    rating_dir = Path(rating_dir)
+    if not rating_dir.exists():
+        return None
+
+    candidates = sorted(rating_dir.glob(f"{player_id}*.json"))
+    for path in candidates:
+        try:
+            payload = json.loads(_extract_json_text(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and (
+            "passes" in payload or "ball-carries" in payload or "error" not in payload
+        ):
+            return payload
+    return None
+
+
+def download_rating_breakdowns(
+    match_url_or_id: str,
+    lineups_file: Path,
+    output_dir: Path,
+    *,
+    mode: str = "browser",
+    delay: float = 1.5,
+    base_dir: Path | None = None,
+) -> Path:
+    """Baixa rating-breakdown de cada jogador para output_dir/raw/{player_id}.json."""
+    match_id = parse_match_id(match_url_or_id)
+    match_url = match_url_or_id if "sofascore.com" in str(match_url_or_id) else (
+        f"https://www.sofascore.com/football/match/match/{match_id}#id:{match_id}"
+    )
+    lineups = load_lineups_file(lineups_file, base_dir=base_dir)
+    players = players_from_lineups(lineups)
+    raw_dir = Path(output_dir) / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    probe_player = players[0].player_id
+    client, label = create_working_client(
+        mode,
+        match_url,
+        match_id,
+        delay,
+        probe_path=f"event/{match_id}/player/{probe_player}/rating-breakdown",
+    )
+    browser_client = label.startswith("browser")
+    ok_count = 0
+    fail_count = 0
+
+    try:
+        for index, player in enumerate(players, start=1):
+            out_path = raw_dir / f"{player.player_id}.json"
+            if out_path.exists() and out_path.stat().st_size > 50:
+                print(f"[{index}/{len(players)}] {player.player_name}: já existe, pulando")
+                ok_count += 1
+                continue
+
+            print(f"[{index}/{len(players)}] {player.player_name} ({player.player_id})")
+            try:
+                breakdown = client.get_rating_breakdown(player.player_id)
+                out_path.write_text(
+                    json.dumps(breakdown, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                ok_count += 1
+            except Exception as exc:  # noqa: BLE001
+                fail_count += 1
+                print(f"  falhou: {exc}")
+    finally:
+        if browser_client and hasattr(client, "close"):
+            client.close()
+
+    print(f"\nDownload: {ok_count} ok, {fail_count} falhas -> {raw_dir}")
+    if ok_count == 0:
+        raise RuntimeError(
+            "Nenhum rating-breakdown baixado. Exporte manualmente no DevTools:\n"
+            "  1) Abra a partida e clique em um jogador\n"
+            "  2) Network → rating-breakdown → Copy response\n"
+            f"  3) Salve em {raw_dir}/PLAYER_ID.json"
+        )
+    return raw_dir
+
+
 def extract_match_events(
     match_url_or_id: str,
     output_dir: Path,
@@ -505,6 +596,7 @@ def extract_match_events(
     delay: float = 0.8,
     save_raw: bool = False,
     lineups_file: Path | None = None,
+    rating_dir: Path | None = None,
     categories: Iterable[str] = EVENT_CATEGORIES,
 ) -> dict[str, pd.DataFrame]:
     match_id = parse_match_id(match_url_or_id)
@@ -513,13 +605,16 @@ def extract_match_events(
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    raw_dir = output_dir / "raw"
+    raw_dir = rating_dir or (output_dir / "raw")
     if save_raw:
         raw_dir.mkdir(parents=True, exist_ok=True)
 
     client = None
     client_label = mode
     browser_client = False
+    failures: list[str] = []
+    loaded_from_file = 0
+    loaded_from_api = 0
 
     try:
         if lineups_file:
@@ -552,8 +647,18 @@ def extract_match_events(
         ]
         pd.DataFrame(lineup_rows).to_csv(output_dir / "lineups.csv", index=False)
 
-        if client is None:
-            client, client_label = create_working_client(mode, match_url, match_id, delay=delay)
+        need_api = any(
+            load_rating_breakdown_file(p.player_id, raw_dir) is None for p in players
+        )
+        if need_api and client is None:
+            probe_player = players[0].player_id
+            client, client_label = create_working_client(
+                mode,
+                match_url,
+                match_id,
+                delay=delay,
+                probe_path=f"event/{match_id}/player/{probe_player}/rating-breakdown",
+            )
             browser_client = client_label.startswith("browser")
 
         all_rows: list[dict[str, Any]] = []
@@ -561,14 +666,24 @@ def extract_match_events(
 
         for index, player in enumerate(players, start=1):
             print(f"[{index}/{len(players)}] {player.player_name} ({player.player_id})")
-            try:
-                breakdown = client.get_rating_breakdown(player.player_id)
-            except Exception as exc:  # noqa: BLE001
-                print(f"  aviso: sem dados para {player.player_name} -> {exc}")
-                continue
+            breakdown = load_rating_breakdown_file(player.player_id, raw_dir)
+
+            if breakdown is None:
+                if client is None:
+                    failures.append(f"{player.player_name}: sem JSON em {raw_dir}")
+                    continue
+                try:
+                    breakdown = client.get_rating_breakdown(player.player_id)
+                    loaded_from_api += 1
+                except Exception as exc:  # noqa: BLE001
+                    failures.append(f"{player.player_name}: {exc}")
+                    print(f"  aviso: sem dados para {player.player_name} -> {exc}")
+                    continue
+            else:
+                loaded_from_file += 1
 
             if save_raw:
-                raw_path = raw_dir / f"{player.player_id}_{_slug(player.player_name)}.json"
+                raw_path = raw_dir / f"{player.player_id}.json"
                 raw_path.write_text(json.dumps(breakdown, ensure_ascii=False, indent=2), encoding="utf-8")
 
             for category in selected_categories:
@@ -578,9 +693,18 @@ def extract_match_events(
                 all_rows.extend(flatten_category_events(events, category, player, match_id))
 
         if not all_rows:
+            fail_text = "\n".join(f"  - {item}" for item in failures[:8])
+            extra = f"\n... e mais {len(failures) - 8}" if len(failures) > 8 else ""
             raise RuntimeError(
-                "Nenhum evento extraído. A API pode estar bloqueada (403). "
-                "Tente --mode browser ou exporte lineups.json manualmente e use --lineups."
+                "Nenhum evento extraído.\n"
+                f"Jogadores no lineup: {len(players)}\n"
+                f"Carregados de arquivo: {loaded_from_file} | via API: {loaded_from_api}\n"
+                f"Falhas ({len(failures)}):\n{fail_text}{extra}\n\n"
+                "Solução recomendada:\n"
+                "  1) Rode download_rating_breakdowns(...) com MODE='browser'\n"
+                "  2) Ou exporte rating-breakdown no DevTools para pasta raw/\n"
+                f"     Ex.: raw/12994.json (Messi)\n"
+                "  3) Depois rode extract_match_events(..., rating_dir=raw_dir)"
             )
 
         all_df = pd.DataFrame(all_rows)
@@ -656,6 +780,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON de lineups salvo manualmente (pula a chamada /lineups)",
     )
     parser.add_argument(
+        "--rating-dir",
+        type=Path,
+        help="Pasta com JSONs rating-breakdown por jogador (ex.: raw/12994.json)",
+    )
+    parser.add_argument(
         "--categories",
         nargs="+",
         default=list(EVENT_CATEGORIES),
@@ -702,6 +831,7 @@ def main(argv: list[str] | None = None) -> int:
             delay=args.delay,
             save_raw=args.save_raw,
             lineups_file=args.lineups,
+            rating_dir=args.rating_dir,
             categories=args.categories,
         )
     except Exception as exc:  # noqa: BLE001
