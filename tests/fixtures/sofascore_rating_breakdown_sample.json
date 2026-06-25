@@ -1,0 +1,38 @@
+{
+  "passes": [
+    {
+      "id": 1,
+      "time": 38,
+      "timeSeconds": 2280,
+      "outcome": "successful",
+      "isHome": true,
+      "playerCoordinates": { "x": 72.0, "y": 35.0, "z": 0 },
+      "passEndCoordinates": { "x": 68.0, "y": 52.0 },
+      "length": 18.4,
+      "angle": 1.2
+    },
+    {
+      "id": 2,
+      "time": 95,
+      "timeSeconds": 5700,
+      "outcome": "successful",
+      "isHome": true,
+      "playerCoordinates": { "x": 88.0, "y": 45.0, "z": 0 },
+      "passEndCoordinates": { "x": 91.0, "y": 50.0 },
+      "length": 6.1,
+      "angle": 0.4
+    }
+  ],
+  "ball-carries": [
+    {
+      "id": 10,
+      "time": 94,
+      "timeSeconds": 5640,
+      "isHome": true,
+      "playerCoordinates": { "x": 60.0, "y": 40.0, "z": 0 },
+      "carryEndCoordinates": { "x": 75.0, "y": 42.0 },
+      "length": 15.0,
+      "progressive": true
+    }
+  ]
+}

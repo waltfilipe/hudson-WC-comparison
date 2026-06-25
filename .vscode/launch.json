@@ -1,0 +1,34 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "SofaScore: extrair partida",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/extract_sofascore_match_events.py",
+      "console": "integratedTerminal",
+      "args": [
+        "https://www.sofascore.com/football/match/argentina-austria/tUbsuWb#id:15186502",
+        "-o",
+        "argentina_austria",
+        "--mode",
+        "auto"
+      ]
+    },
+    {
+      "name": "SofaScore: extrair partida (browser)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/extract_sofascore_match_events.py",
+      "console": "integratedTerminal",
+      "args": [
+        "https://www.sofascore.com/football/match/argentina-austria/tUbsuWb#id:15186502",
+        "-o",
+        "argentina_austria",
+        "--mode",
+        "browser",
+        "--save-raw"
+      ]
+    }
+  ]
+}
