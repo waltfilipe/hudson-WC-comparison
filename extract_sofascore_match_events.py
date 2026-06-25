@@ -31,9 +31,10 @@ DEFAULT_MATCH_URL = (
     "https://www.sofascore.com/football/match/argentina-austria/tUbsuWb#id:15186502"
 )
 API_BASE = "https://api.sofascore.com/api/v1"
+SAME_ORIGIN_API_BASE = "https://www.sofascore.com/api/v1"
 API_BASES = (
-    "https://www.sofascore.com/api/v1",
-    "https://api.sofascore.com/api/v1",
+    SAME_ORIGIN_API_BASE,
+    API_BASE,
 )
 EVENT_CATEGORIES = ("passes", "ball-carries")
 DEFAULT_IMPERSONATE = ("chrome131", "chrome124", "chrome120", "safari184", "edge101")
@@ -328,7 +329,7 @@ class CurlCffiClient:
 
 
 class BrowserClient:
-    """Fallback com Chrome real (undetected-chromedriver), útil quando curl_cffi recebe 403."""
+    """Chrome real: abre a partida e busca a API no mesmo domínio (www.sofascore.com)."""
 
     def __init__(
         self,
@@ -337,6 +338,7 @@ class BrowserClient:
         delay: float = 1.5,
         *,
         headless: bool = True,
+        wait_for_user: bool = False,
     ) -> None:
         import undetected_chromedriver as uc
 
@@ -358,8 +360,23 @@ class BrowserClient:
             options=options,
             version_main=chrome_version,
         )
+        self._open_match_page()
+        if wait_for_user and not headless:
+            print(
+                "\n>>> Chrome aberto na partida.\n"
+                ">>> Se aparecer verificação/captcha, resolva no navegador.\n"
+                ">>> Depois volte aqui e pressione Enter para continuar..."
+            )
+            input()
+
+    def _open_match_page(self) -> None:
         self.driver.get(self.match_url)
         time.sleep(self.delay)
+
+    def _ensure_match_page(self) -> None:
+        current = self.driver.current_url or ""
+        if "sofascore.com" not in current or "/match/" not in current:
+            self._open_match_page()
 
     def close(self) -> None:
         self.driver.quit()
@@ -368,35 +385,54 @@ class BrowserClient:
         rel_path = path.lstrip("/")
         last_error: Exception | None = None
 
-        for base in API_BASES:
-            url = f"{base}/{rel_path}"
-            try:
-                payload = self._fetch_via_navigation(url)
-                if isinstance(payload, dict) and payload.get("error"):
-                    error = payload["error"]
-                    if error.get("code") == 403:
-                        last_error = RuntimeError(f"403 Forbidden em {url}: {error}")
-                        continue
-                    raise RuntimeError(f"Erro da API em {url}: {error}")
-                time.sleep(self.delay)
-                return payload
-            except Exception as exc:  # noqa: BLE001
-                last_error = exc
+        try:
+            payload = self._fetch_via_same_origin(rel_path)
+            if isinstance(payload, dict) and payload.get("error"):
+                error = payload["error"]
+                raise RuntimeError(f"Erro da API: {error}")
+            time.sleep(self.delay)
+            return payload
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
 
-        raise RuntimeError(f"Falha ao acessar {rel_path} via browser") from last_error
+        raise RuntimeError(
+            f"Falha ao acessar {rel_path} via browser.\n"
+            "Não cole a URL da API numa aba nova — use DevTools na página da partida "
+            "ou exporte um arquivo HAR (veja parse_har_rating_breakdowns)."
+        ) from last_error
 
-    def _fetch_via_navigation(self, url: str) -> dict[str, Any]:
-        """Abre a URL da API diretamente no Chrome (evita bloqueio CORS do fetch)."""
-        from bs4 import BeautifulSoup
+    def _fetch_via_same_origin(self, rel_path: str) -> dict[str, Any]:
+        """fetch na mesma origem (www.sofascore.com) com cookies da partida aberta."""
+        self._ensure_match_page()
+        url = f"{SAME_ORIGIN_API_BASE}/{rel_path.lstrip('/')}"
+        script = """
+        const url = arguments[0];
+        const done = arguments[arguments.length - 1];
+        fetch(url, {
+            method: 'GET',
+            credentials: 'include',
+            headers: { 'Accept': 'application/json, text/plain, */*' },
+        })
+        .then(async (response) => {
+            let data = null;
+            try { data = await response.json(); }
+            catch (e) { data = { error: { message: 'invalid json', status: response.status } }; }
+            done({ ok: response.ok, status: response.status, data });
+        })
+        .catch((error) => done({ ok: false, status: 0, data: { error: { message: String(error) } } }));
+        """
+        result = self.driver.execute_async_script(script, url)
+        if not isinstance(result, dict):
+            raise RuntimeError(f"Resposta inesperada do browser para {url}")
 
-        self.driver.get(url)
-        time.sleep(self.delay)
-
-        soup = BeautifulSoup(self.driver.page_source, "html.parser")
-        pre = soup.find("pre")
-        raw_text = pre.get_text() if pre else soup.get_text()
-        json_text = _extract_json_text(raw_text)
-        payload = json.loads(json_text)
+        status = result.get("status", 0)
+        payload = result.get("data", {})
+        if status == 403 or (isinstance(payload, dict) and payload.get("error", {}).get("code") == 403):
+            raise RuntimeError(
+                f"403 em {url}. Abra a partida no Chrome, resolva a verificação e tente de novo."
+            )
+        if not result.get("ok"):
+            raise RuntimeError(f"HTTP {status} em {url}: {payload}")
         if not isinstance(payload, dict):
             raise RuntimeError(f"JSON inválido em {url}")
         return payload
@@ -426,14 +462,14 @@ def create_working_client(
     if mode == "curl":
         attempts.append(("curl", {}))
     elif mode == "browser":
-        attempts.append(("browser-visible", {"headless": False}))
-        attempts.append(("browser-headless", {"headless": True}))
+        attempts.append(("browser-visible", {"headless": False, "wait_for_user": True}))
+        attempts.append(("browser-headless", {"headless": True, "wait_for_user": False}))
     else:
         attempts.extend(
             [
                 ("curl", {}),
-                ("browser-visible", {"headless": False}),
-                ("browser-headless", {"headless": True}),
+                ("browser-visible", {"headless": False, "wait_for_user": True}),
+                ("browser-headless", {"headless": True, "wait_for_user": False}),
             ]
         )
 
@@ -506,6 +542,7 @@ def download_rating_breakdowns(
     mode: str = "browser",
     delay: float = 1.5,
     base_dir: Path | None = None,
+    wait_for_user: bool = True,
 ) -> Path:
     """Baixa rating-breakdown de cada jogador para output_dir/raw/{player_id}.json."""
     match_id = parse_match_id(match_url_or_id)
@@ -518,13 +555,23 @@ def download_rating_breakdowns(
     raw_dir.mkdir(parents=True, exist_ok=True)
 
     probe_player = players[0].player_id
-    client, label = create_working_client(
-        mode,
-        match_url,
-        match_id,
-        delay,
-        probe_path=f"event/{match_id}/player/{probe_player}/rating-breakdown",
-    )
+    probe_path = f"event/{match_id}/player/{probe_player}/rating-breakdown"
+    if mode == "browser":
+        client, label = _create_browser_client(
+            match_url,
+            match_id,
+            delay,
+            wait_for_user=wait_for_user,
+            probe_path=probe_path,
+        )
+    else:
+        client, label = create_working_client(
+            mode,
+            match_url,
+            match_id,
+            delay,
+            probe_path=probe_path,
+        )
     browser_client = label.startswith("browser")
     ok_count = 0
     fail_count = 0
@@ -555,10 +602,97 @@ def download_rating_breakdowns(
     print(f"\nDownload: {ok_count} ok, {fail_count} falhas -> {raw_dir}")
     if ok_count == 0:
         raise RuntimeError(
-            "Nenhum rating-breakdown baixado. Exporte manualmente no DevTools:\n"
-            "  1) Abra a partida e clique em um jogador\n"
-            "  2) Network → rating-breakdown → Copy response\n"
-            f"  3) Salve em {raw_dir}/PLAYER_ID.json"
+            "Nenhum rating-breakdown baixado.\n"
+            "Método manual (recomendado se 403):\n"
+            "  1) Abra a partida no Chrome (não cole URL da API)\n"
+            "  2) F12 → Network → clique em cada jogador na escalação\n"
+            "  3) Filtre rating-breakdown → Copy response → raw/PLAYER_ID.json\n"
+            "  OU exporte HAR (botão direito na lista Network → Save all as HAR)\n"
+            "  e use parse_har_rating_breakdowns('partida.har', output_dir)"
+        )
+    return raw_dir
+
+
+def _create_browser_client(
+    match_url: str,
+    match_id: int,
+    delay: float,
+    *,
+    wait_for_user: bool,
+    probe_path: str,
+) -> tuple[BrowserClient, str]:
+    last_error: Exception | None = None
+    for label, options in (
+        ("browser-visible", {"headless": False, "wait_for_user": wait_for_user}),
+        ("browser-headless", {"headless": True, "wait_for_user": False}),
+    ):
+        client = None
+        try:
+            client = BrowserClient(match_url, match_id, delay=delay, **options)
+            client.get_json(probe_path)
+            print(f"Conectado via {label}")
+            return client, label
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            print(f"Modo {label} falhou: {exc}")
+            if client is not None:
+                client.close()
+    raise RuntimeError("Browser não conseguiu acessar rating-breakdown.") from last_error
+
+
+def parse_har_rating_breakdowns(
+    har_file: Path,
+    output_dir: Path,
+    *,
+    match_id: int | None = None,
+) -> Path:
+    """Extrai rating-breakdown de um HAR exportado no DevTools (Network → Save all as HAR)."""
+    import base64
+
+    har_path = Path(har_file)
+    if not har_path.exists():
+        raise FileNotFoundError(f"HAR não encontrado: {har_path}")
+
+    har = json.loads(har_path.read_text(encoding="utf-8"))
+    raw_dir = Path(output_dir) / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    saved = 0
+
+    for entry in har.get("log", {}).get("entries", []):
+        url = entry.get("request", {}).get("url", "")
+        if "rating-breakdown" not in url:
+            continue
+        if match_id is not None and str(match_id) not in url:
+            continue
+
+        match = re.search(r"/player/(\d+)/rating-breakdown", url)
+        if not match:
+            continue
+        player_id = match.group(1)
+
+        content = entry.get("response", {}).get("content", {})
+        text = content.get("text", "")
+        if not text:
+            continue
+        if content.get("encoding") == "base64":
+            text = base64.b64decode(text).decode("utf-8", errors="replace")
+
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("error"):
+            continue
+
+        out_path = raw_dir / f"{player_id}.json"
+        out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        saved += 1
+
+    print(f"HAR: {saved} arquivos salvos em {raw_dir}")
+    if saved == 0:
+        raise RuntimeError(
+            "Nenhum rating-breakdown no HAR.\n"
+            "Grave o HAR enquanto clica em cada jogador na escalação da partida."
         )
     return raw_dir
 
@@ -569,17 +703,20 @@ def print_rating_breakdown_urls(
     *,
     base_dir: Path | None = None,
 ) -> None:
-    """Imprime URLs para abrir no Chrome e salvar cada JSON manualmente."""
+    """Mostra URLs só para referência — colar no navegador costuma dar 403."""
     match_id = parse_match_id(match_url_or_id)
     lineups = load_lineups_file(lineups_file, base_dir=base_dir)
     players = players_from_lineups(lineups)
-    print("Abra cada URL no Chrome, Ctrl+S e salve como raw/PLAYER_ID.json\n")
+    print(
+        "ATENÇÃO: colar estas URLs numa aba nova geralmente retorna 403.\n"
+        "Use DevTools NA PÁGINA DA PARTIDA (clique no jogador → Network → rating-breakdown).\n"
+    )
     for player in players:
         url = (
             f"https://www.sofascore.com/api/v1/event/{match_id}/"
             f"player/{player.player_id}/rating-breakdown"
         )
-        print(f"{player.player_name}: {url}")
+        print(f"{player.player_name} ({player.player_id}): {url}")
 
 
 def extract_match_events(
